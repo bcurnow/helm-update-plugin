@@ -246,15 +246,58 @@ make all
 
 Runs tidy, test, and build in sequence.
 
-### Release Build
+## Releasing a New Version
 
-To build a release version with version information:
+Releases are published to GitHub via [GoReleaser](https://goreleaser.com). GoReleaser
+determines the version from the **git tag**, so the tag must be created and pushed
+before running the release target.
 
-```bash
-make release
-```
+### Prerequisites
 
-Outputs to `bin/helm-upgrade-check-1.0.0`.
+- [GoReleaser](https://goreleaser.com/install/) installed and on your `$PATH`
+- A GitHub personal access token with `repo` scope saved to
+  `~/.config/goreleaser/helm-upgrade-check-plugin-github-token`
+
+### Step-by-step
+
+1. **Bump the version** in two places — they must match the tag you will create:
+
+   ```bash
+   # Makefile  — update VERSION=
+   # plugin.yaml — update version:
+   ```
+
+2. **Update `CHANGELOG.md`** with a new entry for the release (follow the
+   Keep a Changelog format already used in the file).
+
+3. **Commit the version bump and changelog:**
+
+   ```bash
+   git add Makefile plugin.yaml CHANGELOG.md
+   git commit -m "Release vX.Y.Z"
+   ```
+
+4. **Create and push the tag** — GoReleaser reads this to determine the version:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+5. **Run the release:**
+
+   ```bash
+   make release
+   ```
+
+   This runs `goreleaser release --clean`, which:
+   - Builds binaries for Linux, macOS, and Windows (amd64 + arm64)
+   - Generates `checksums.txt`
+   - Publishes a GitHub Release with all binaries attached
+   - Injects the version into the binary via `-X main.Version`
+
+   > **Note:** `make release` will fail if no tag exists on `HEAD`. Always push
+   > the tag before running it.
 
 ## Troubleshooting
 
