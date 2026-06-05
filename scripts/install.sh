@@ -44,6 +44,9 @@ fi
 FILENAME="helm-upgrade-check-plugin_${VERSION}_${OS}_${ARCH}.tar.gz"
 URL="https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/v${VERSION}/${FILENAME}"
 
+CHECKSUMS_FILENAME="checksums.txt"
+CHECKSUMS_URL="https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/v${VERSION}/${CHECKSUMS_FILENAME}"
+
 echo "Downloading ${FILENAME}..."
 
 TMP="$(mktemp -d)"
@@ -51,11 +54,24 @@ trap 'rm -rf "${TMP}"' EXIT
 
 if command -v curl &>/dev/null; then
     curl -sSL "${URL}" -o "${TMP}/${FILENAME}"
+    curl -sSL "${CHECKSUMS_URL}" -o "${TMP}/${CHECKSUMS_FILENAME}"
 elif command -v wget &>/dev/null; then
     wget -qO "${TMP}/${FILENAME}" "${URL}"
+    wget -qO "${TMP}/${CHECKSUMS_FILENAME}" "${CHECKSUMS_URL}"
 else
     echo "Error: curl or wget is required to install this plugin" >&2
     exit 1
+fi
+
+echo "Verifying checksum..."
+if command -v sha256sum &>/dev/null; then
+    (cd "${TMP}" && grep "${FILENAME}" "${CHECKSUMS_FILENAME}" | sha256sum --check --status) \
+        || { echo "Error: checksum verification failed for ${FILENAME}" >&2; exit 1; }
+elif command -v shasum &>/dev/null; then
+    (cd "${TMP}" && grep "${FILENAME}" "${CHECKSUMS_FILENAME}" | shasum -a 256 --check --status) \
+        || { echo "Error: checksum verification failed for ${FILENAME}" >&2; exit 1; }
+else
+    echo "Warning: neither sha256sum nor shasum found, skipping checksum verification" >&2
 fi
 
 tar -xzf "${TMP}/${FILENAME}" -C "${TMP}"

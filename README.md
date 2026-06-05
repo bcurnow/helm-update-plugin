@@ -28,32 +28,7 @@ The plugin is designed for:
 
 ## Installation
 
-### Prerequisites
-
-- Helm 3.1.0 or later
-- A configured kubeconfig with cluster access
-- One or more configured Helm repositories
-
-### Install the Plugin
-
-```bash
-helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin.git
-```
-
-Or for direct installation from a local checkout:
-
-```bash
-git clone https://github.com/bcurnow/helm-upgrade-check-plugin.git
-cd helm-upgrade-check-plugin
-make build
-helm plugin install .
-```
-
-### Uninstall
-
-```bash
-helm plugin uninstall upgrade-check
-```
+See [INSTALL.md](INSTALL.md) for installation, upgrade, and uninstall instructions.
 
 ## Usage
 

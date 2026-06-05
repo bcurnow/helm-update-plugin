@@ -21,8 +21,10 @@ helm version
 Install the latest version directly from the GitHub repository:
 
 ```bash
-helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin.git
+helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin.git --verify=false
 ```
+
+> **Note:** `--verify=false` is required because Helm 4 defaults to verifying plugin sources via GPG signature, but git-based sources do not support this mechanism. The downloaded binary is still verified against its SHA256 checksum by the install script.
 
 ### Method 2: Install from Local Source
 
@@ -101,7 +103,7 @@ If you installed from GitHub, pull the latest version and reinstall:
 
 ```bash
 helm plugin uninstall upgrade-check
-helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin.git
+helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin.git --verify=false
 ```
 
 ### From Local Installation
