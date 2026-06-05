@@ -28,10 +28,11 @@ type Chart struct {
 
 // Release represents a Helm release installed in the cluster.
 type Release struct {
-	Name       string // release name
-	Namespace  string // Kubernetes namespace
-	Chart      string // chart name with version, e.g. "redis-14.8.8"
-	AppVersion string // application version of the deployed release
+	Name         string // release name
+	Namespace    string // Kubernetes namespace
+	Chart        string // chart name with version, e.g. "redis-14.8.8"
+	ChartVersion string // chart version only, e.g. "14.8.8" (authoritative for --version)
+	AppVersion   string // application version of the deployed release
 }
 
 // MissingChartError is used to report releases that could not be matched

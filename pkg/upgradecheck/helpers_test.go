@@ -99,19 +99,26 @@ func TestChartSearcher_Search(t *testing.T) {
 	}
 	searcher := NewChartSearcher(repos, nil)
 
+	// r1 has chart version 1.0.0 / app version 7.0.0
+	// Version is set via Metadata (repo.ChartVersion embeds *chart.Metadata).
 	searcher.idxCache["r1"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
-			"redis": {&repo.ChartVersion{Metadata: &chart.Metadata{AppVersion: "1.0.0"}}},
+			"redis": {&repo.ChartVersion{Metadata: &chart.Metadata{Version: "1.0.0", AppVersion: "7.0.0"}}},
 		},
 	}
+	// bitnami has a higher chart version 2.0.0 / app version 7.2.0
 	searcher.idxCache["bitnami"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
-			"redis": {&repo.ChartVersion{Metadata: &chart.Metadata{AppVersion: "2.0.0"}}},
+			"redis": {&repo.ChartVersion{Metadata: &chart.Metadata{Version: "2.0.0", AppVersion: "7.2.0"}}},
 		},
 	}
 
 	res := searcher.Search("redis")
+	// Version is the latest chart version (bitnami's 2.0.0 wins the comparison)
 	assert.Equal(t, "2.0.0", res.Version)
+	// AppVersion comes from the winning entry (bitnami 7.2.0)
+	assert.Equal(t, "7.2.0", res.AppVersion)
+	// Repos has bitnami removed by the dedup rule; r1 is kept
 	assert.Equal(t, []string{"r1"}, res.Repos)
 
 	// ensure caching works
@@ -171,7 +178,9 @@ func TestOCIRepositoryLookup(t *testing.T) {
 	s := NewChartSearcher([]*repo.Entry{repoEntry}, nil)
 
 	res := s.Search("mychart")
-	assert.Equal(t, "5.5.5", res.Version)
+	// Version is the chart version (OCI tag "1.0.0"), not the app version.
+	assert.Equal(t, "1.0.0", res.Version)
+	assert.Equal(t, "5.5.5", res.AppVersion)
 	assert.Equal(t, []string{"ociRepo"}, res.Repos)
 }
 
@@ -210,14 +219,31 @@ func TestConvertReleaseList(t *testing.T) {
 	helmRel := &release.Release{
 		Name:      "r",
 		Namespace: "n",
-		Chart:     &chart.Chart{Metadata: &chart.Metadata{Version: "1.2.3", AppVersion: "1.2.3"}},
+		Chart:     &chart.Chart{Metadata: &chart.Metadata{Version: "1.2.3", AppVersion: "5.6.7"}},
 	}
 	out := convertReleaseList([]*release.Release{helmRel})
 	if assert.Len(t, out, 1) {
 		assert.Equal(t, "r", out[0].Name)
 		assert.Equal(t, "n", out[0].Namespace)
 		assert.Equal(t, "-1.2.3", out[0].Chart)
-		assert.Equal(t, "1.2.3", out[0].AppVersion)
+		assert.Equal(t, "1.2.3", out[0].ChartVersion)
+		assert.Equal(t, "5.6.7", out[0].AppVersion)
+	}
+}
+
+func TestConvertReleaseList_ChartVersionDiffersFromAppVersion(t *testing.T) {
+	// ingress-nginx is a real-world example: chart 4.9.1, app 1.9.1.
+	// ChartVersion must carry the chart version, not the app version.
+	helmRel := &release.Release{
+		Name:      "ingress-nginx",
+		Namespace: "ingress",
+		Chart:     &chart.Chart{Metadata: &chart.Metadata{Name: "ingress-nginx", Version: "4.9.1", AppVersion: "1.9.1"}},
+	}
+	out := convertReleaseList([]*release.Release{helmRel})
+	if assert.Len(t, out, 1) {
+		assert.Equal(t, "ingress-nginx-4.9.1", out[0].Chart)
+		assert.Equal(t, "4.9.1", out[0].ChartVersion)
+		assert.Equal(t, "1.9.1", out[0].AppVersion)
 	}
 }
 

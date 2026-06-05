@@ -107,14 +107,23 @@ helm upgrade-check -u -d
 The plugin outputs a table with the following columns:
 
 ```
-Chart Name      Release Name     Namespace      Current Version  Upgrade Version  Repo(s)
-----------      ------------     ---------      ---------------  ---------------  -------
+Chart Name      Release Name    Namespace       Chart Ver     Latest Chart  App Ver       Latest App    Repo(s)
+----------      ------------    ---------       ---------     ------------  -------       ----------    -------
 ```
+
+| Column | Description |
+|--------|-------------|
+| **Chart Ver** | The chart version currently installed (used for `--version` in `helm upgrade`) |
+| **Latest Chart** | The latest chart version available in your repositories |
+| **App Ver** | The application version bundled with the installed chart |
+| **Latest App** | The application version bundled with the latest chart release |
+
+> **Note:** `helm upgrade --version` takes the **chart version**, not the application version. These differ for many charts — for example `ingress-nginx` chart `4.9.1` ships app version `1.9.1`. The plugin always uses the chart version for upgrade commands.
 
 ### Status Indicators
 
-- **Blue text** — out-of-date release with a newer version available
-- **Green text** — up-to-date release at the latest version
+- **Blue text** — out-of-date release with a newer chart version available
+- **Green text** — up-to-date release at the latest chart version
 
 ### Upgrade Commands
 
@@ -122,15 +131,34 @@ For each out-of-date release, the plugin prints three commands:
 
 1. **Get current values** — saves the release's current values to a file
 2. **Review values** — displays the saved values for inspection
-3. **Execute upgrade** — performs the actual upgrade with those values
+3. **Execute upgrade** — performs the actual upgrade with the latest **chart** version
 
 Example output:
 
 ```
-redis           my-redis       default        1.14.5           1.15.2           stable
-  helm get values --namespace default my-redis -o yaml > my-redis.values
-  cat my-redis.values
-  helm upgrade --namespace default my-redis stable/redis --version 1.15.2 --values my-redis.values
+ingress-nginx   ingress-nginx   ingress    4.9.1         4.10.0        1.9.1         1.10.1        ingress-nginx
+  helm get values --namespace ingress ingress-nginx -o yaml > ingress-nginx.values
+  cat ingress-nginx.values
+  helm upgrade --namespace ingress ingress-nginx ingress-nginx/ingress-nginx --version 4.10.0 --values ingress-nginx.values
+```
+
+### JSON Output
+
+Use `--json` / `-j` for machine-readable output. Each result includes:
+
+```json
+{
+  "chart_name": "ingress-nginx",
+  "release_name": "ingress-nginx",
+  "namespace": "ingress",
+  "installed_chart_version": "4.9.1",
+  "latest_chart_version": "4.10.0",
+  "installed_app_version": "1.9.1",
+  "latest_app_version": "1.10.1",
+  "repos": ["ingress-nginx"],
+  "upgradable": true,
+  "commands": [...]
+}
 ```
 
 ### Error Handling

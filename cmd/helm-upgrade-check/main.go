@@ -102,34 +102,41 @@ func main() {
 	}
 
 	type resultItem struct {
-		ChartName      string   `json:"chart_name"`
-		ReleaseName    string   `json:"release_name"`
-		Namespace      string   `json:"namespace"`
-		CurrentVersion string   `json:"current_version"`
-		UpgradeVersion string   `json:"upgrade_version"`
-		Repos          []string `json:"repos"`
-		Upgradable     bool     `json:"upgradable"`
-		Commands       []string `json:"commands,omitempty"`
+		ChartName             string   `json:"chart_name"`
+		ReleaseName           string   `json:"release_name"`
+		Namespace             string   `json:"namespace"`
+		InstalledChartVersion string   `json:"installed_chart_version"`
+		LatestChartVersion    string   `json:"latest_chart_version"`
+		InstalledAppVersion   string   `json:"installed_app_version"`
+		LatestAppVersion      string   `json:"latest_app_version"`
+		Repos                 []string `json:"repos"`
+		Upgradable            bool     `json:"upgradable"`
+		Commands              []string `json:"commands,omitempty"`
 	}
 
 	var results []resultItem
 	var errors []upgradecheck.MissingChartError
 	for _, rel := range releases {
 		chartName := upgradecheck.ChartName(rel.Chart)
-		currentVersion := rel.AppVersion
-		if currentVersion == "" {
-			currentVersion = "Unknown"
+		installedChartVer := rel.ChartVersion
+		if installedChartVer == "" {
+			installedChartVer = "Unknown"
+		}
+		installedAppVer := rel.AppVersion
+		if installedAppVer == "" {
+			installedAppVer = "Unknown"
 		}
 		info := searcher.Search(chartName)
 		if len(info.Repos) == 0 {
 			errors = append(errors, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
 			continue
 		}
-		upgradeVersion := info.Version
-		if upgradeVersion == "" || upgradeVersion == "null" {
-			upgradeVersion = "N/A"
+		latestChartVer := info.Version
+		if latestChartVer == "" || latestChartVer == "null" {
+			latestChartVer = "N/A"
 		}
-		upgradable := upgradecheck.CompareVersions(upgradeVersion, currentVersion, includePrerel)
+		// Compare chart versions — this is what helm upgrade --version accepts.
+		upgradable := upgradecheck.CompareVersions(latestChartVer, installedChartVer, includePrerel)
 		repoList := info.Repos
 
 		var commands []string
@@ -138,19 +145,22 @@ func main() {
 			commands = []string{
 				fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", rel.Namespace, rel.Name, rel.Name),
 				fmt.Sprintf("cat %s.values", rel.Name),
-				fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", rel.Namespace, rel.Name, repoListStr, chartName, upgradeVersion, rel.Name),
+				// --version takes the chart version, not the app version.
+				fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", rel.Namespace, rel.Name, repoListStr, chartName, latestChartVer, rel.Name),
 			}
 		}
 
 		results = append(results, resultItem{
-			ChartName:      chartName,
-			ReleaseName:    rel.Name,
-			Namespace:      rel.Namespace,
-			CurrentVersion: currentVersion,
-			UpgradeVersion: upgradeVersion,
-			Repos:          repoList,
-			Upgradable:     upgradable,
-			Commands:       commands,
+			ChartName:             chartName,
+			ReleaseName:           rel.Name,
+			Namespace:             rel.Namespace,
+			InstalledChartVersion: installedChartVer,
+			LatestChartVersion:    latestChartVer,
+			InstalledAppVersion:   installedAppVer,
+			LatestAppVersion:      info.AppVersion,
+			Repos:                 repoList,
+			Upgradable:            upgradable,
+			Commands:              commands,
 		})
 	}
 
@@ -169,21 +179,21 @@ func main() {
 	}
 
 	// Human output: print table and missing charts
-	printFormat := "%-20s %-20s %-20s %-20s %-20s %-20s\n"
+	printFormat := "%-20s %-15s %-15s %-13s %-13s %-13s %-13s %-15s\n"
 	outOfDate := color.New(color.FgBlue)
 	upToDate := color.New(color.FgGreen)
 	fmt.Println()
-	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Current Version", "Upgrade Version", "Repo(s)")
-	fmt.Printf(printFormat, "----------", "------------", "---------", "---------------", "---------------", "-------")
+	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Chart Ver", "Latest Chart", "App Ver", "Latest App", "Repo(s)")
+	fmt.Printf(printFormat, "----------", "------------", "---------", "---------", "------------", "-------", "----------", "-------")
 	for _, r := range results {
 		repoListStr := strings.Join(r.Repos, ",")
 		if r.Upgradable {
-			outOfDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, r.CurrentVersion, r.UpgradeVersion, repoListStr)
+			outOfDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, r.InstalledChartVersion, r.LatestChartVersion, r.InstalledAppVersion, r.LatestAppVersion, repoListStr)
 			for _, cmd := range r.Commands {
 				fmt.Printf("  %s\n", cmd)
 			}
 		} else {
-			upToDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, r.CurrentVersion, "Up-to-date", repoListStr)
+			upToDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, r.InstalledChartVersion, r.LatestChartVersion, r.InstalledAppVersion, r.LatestAppVersion, repoListStr)
 		}
 	}
 

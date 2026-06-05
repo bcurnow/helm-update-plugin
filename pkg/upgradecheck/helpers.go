@@ -87,11 +87,12 @@ func LoadRepoEntries(settings *cli.EnvSettings) ([]*repo.Entry, error) {
 }
 
 // ChartSearchResult is the information returned from a chart lookup.
-// It contains the list of repositories where the chart exists and the
-// latest application version observed.
+// Version is the latest chart version (used for --version in helm upgrade).
+// AppVersion is the application version bundled with that chart release.
 type ChartSearchResult struct {
-	Repos   []string
-	Version string
+	Repos      []string
+	Version    string // latest chart version (authoritative for helm upgrade --version)
+	AppVersion string // app version of the latest chart release (for display only)
 }
 
 // ChartSearcher performs on-demand lookups of repository indexes to resolve
@@ -125,8 +126,9 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 	}
 
 	type result struct {
-		repo    string
-		version string
+		repo       string
+		version    string // chart version (authoritative)
+		appVersion string // app version for display
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -153,13 +155,12 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 				return
 			}
 			if versions, ok := idx.Entries[chartName]; ok && len(versions) > 0 {
-				v := ""
-				if versions[0].Metadata != nil && versions[0].Metadata.AppVersion != "" {
-					v = versions[0].Metadata.AppVersion
-				} else if versions[0].Version != "" {
-					v = versions[0].Version
+				cv := versions[0].Version
+				av := ""
+				if versions[0].Metadata != nil {
+					av = versions[0].Metadata.AppVersion
 				}
-				ch <- result{repo: entry.Name, version: v}
+				ch <- result{repo: entry.Name, version: cv, appVersion: av}
 			}
 		}()
 	}
@@ -170,11 +171,12 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 	}()
 
 	uniq := make(map[string]struct{})
-	var latest string
+	var latestChartVer, latestAppVer string
 	for r := range ch {
 		uniq[r.repo] = struct{}{}
-		if latest == "" || CompareVersions(r.version, latest, true) {
-			latest = r.version
+		if latestChartVer == "" || CompareVersions(r.version, latestChartVer, true) {
+			latestChartVer = r.version
+			latestAppVer = r.appVersion
 		}
 	}
 	reposFound := make([]string, 0, len(uniq))
@@ -195,7 +197,7 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 		}
 	}
 
-	res := ChartSearchResult{Repos: reposFound, Version: latest}
+	res := ChartSearchResult{Repos: reposFound, Version: latestChartVer, AppVersion: latestAppVer}
 	s.resultMap[chartName] = res
 	return res
 }
@@ -339,10 +341,11 @@ func convertReleaseList(list []*release.Release) []Release {
 	var out []Release
 	for _, rel := range list {
 		out = append(out, Release{
-			Name:       rel.Name,
-			Namespace:  rel.Namespace,
-			Chart:      rel.Chart.Name() + "-" + rel.Chart.Metadata.Version,
-			AppVersion: rel.Chart.Metadata.AppVersion,
+			Name:         rel.Name,
+			Namespace:    rel.Namespace,
+			Chart:        rel.Chart.Name() + "-" + rel.Chart.Metadata.Version,
+			ChartVersion: rel.Chart.Metadata.Version,
+			AppVersion:   rel.Chart.Metadata.AppVersion,
 		})
 	}
 	return out
