@@ -325,3 +325,126 @@ func TestMain_UpdateAndHumanOutput(t *testing.T) {
 		t.Fatalf("fetch message missing")
 	}
 }
+
+func TestMain_AppVersionRegression_NotUpgradable(t *testing.T) {
+	// Cilium-style: a higher chart version (3.1.9) exists but ships an older
+	// app version (1.18.1 < installed 1.19.1). Must NOT be shown as upgradable.
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	}()
+
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{
+			Name:         "cilium",
+			Namespace:    "kube-system",
+			Chart:        "cilium-1.19.1",
+			ChartVersion: "1.19.1",
+			AppVersion:   "1.19.1",
+		}}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Repos:      []string{"some-repo"},
+			Version:    "3.1.9",  // higher chart version …
+			AppVersion: "1.18.1", // … but ships an older app version
+		}}
+	}
+
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	os.Args = []string{"cmd", "--json"}
+	main()
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	if up, _ := res["upgradable"].(bool); up {
+		t.Error("expected upgradable=false when latest chart ships an older app version")
+	}
+	if cmds, _ := res["commands"].([]interface{}); len(cmds) != 0 {
+		t.Errorf("expected no upgrade commands when app would regress, got %v", cmds)
+	}
+}
+
+func TestMain_ChartOnlyBump_IsUpgradable(t *testing.T) {
+	// Chart version bumped (packaging fix) but app version is identical.
+	// Must still show as upgradable per user preference.
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	}()
+
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{
+			Name:         "myapp",
+			Namespace:    "default",
+			Chart:        "myapp-1.0.0",
+			ChartVersion: "1.0.0",
+			AppVersion:   "2.0.0",
+		}}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Repos:      []string{"myrepo"},
+			Version:    "1.1.0", // chart version bumped …
+			AppVersion: "2.0.0", // … same app version
+		}}
+	}
+
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	os.Args = []string{"cmd", "--json"}
+	main()
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	if up, _ := res["upgradable"].(bool); !up {
+		t.Error("expected upgradable=true when chart version bumped with same app version")
+	}
+	cmds, _ := res["commands"].([]interface{})
+	if len(cmds) != 3 {
+		t.Errorf("expected 3 upgrade commands, got %d", len(cmds))
+	}
+	upgradeCmd, _ := cmds[2].(string)
+	if !strings.Contains(upgradeCmd, "--version 1.1.0") {
+		t.Errorf("upgrade command should use chart version 1.1.0, got: %s", upgradeCmd)
+	}
+}

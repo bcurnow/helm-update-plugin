@@ -122,8 +122,10 @@ Chart Name      Release Name    Namespace       Chart Ver     Latest Chart  App 
 
 ### Status Indicators
 
-- **Blue text** — out-of-date release with a newer chart version available
-- **Green text** — up-to-date release at the latest chart version
+- **Blue text** — out-of-date release: a newer chart version is available **and** its app version does not regress
+- **Green text** — up-to-date release, or a "newer" chart from a different repo ships an older app version
+
+> A higher chart version is only flagged as an upgrade when the candidate chart's app version is equal to or greater than the installed app version. This prevents a chart from a different repository (with its own version numbering) being shown as an update when it would actually downgrade the running application. When app versions are non-semver or absent, the comparison falls back to chart version only.
 
 ### Upgrade Commands
 

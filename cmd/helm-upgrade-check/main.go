@@ -136,7 +136,14 @@ func main() {
 			latestChartVer = "N/A"
 		}
 		// Compare chart versions — this is what helm upgrade --version accepts.
-		upgradable := upgradecheck.CompareVersions(latestChartVer, installedChartVer, includePrerel)
+		chartNewer := upgradecheck.CompareVersions(latestChartVer, installedChartVer, includePrerel)
+		// Guard: if both app versions are valid semver and the candidate's app
+		// version is strictly older, suppress the upgrade signal. Equal app
+		// versions and non-semver app versions return false (no regression), so
+		// chart-only bumps still flag and unusual app version schemes fall back
+		// to the chart-version decision.
+		appRegresses := upgradecheck.CompareVersions(installedAppVer, info.AppVersion, includePrerel)
+		upgradable := chartNewer && !appRegresses
 		repoList := info.Repos
 
 		var commands []string
