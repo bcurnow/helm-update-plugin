@@ -252,10 +252,10 @@ before running the release target.
    git commit -m "Release vX.Y.Z"
    ```
 
-4. **Create and push the tag** — GoReleaser reads this to determine the version:
+4. **Create and push the tag** — GoReleaser reads this to determine the version. The tag **must be annotated** (`-a`) — Helm only recognises annotated tags when auto-detecting the latest plugin version; a lightweight tag causes `helm plugin install` (without `--version`) to silently fall back to the previous release:
 
    ```bash
-   git tag vX.Y.Z
+   git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z
    ```
 
