@@ -189,8 +189,8 @@ func main() {
 	// Version columns show "<current>" when up-to-date or "<current> -> <latest>"
 	// when an upgrade is available.
 	printFormat := "%-25s %-25s %-25s %-25s %-35s %-35s\n"
-	outOfDate := color.New(color.FgBlue)
-	upToDate := color.New(color.FgGreen)
+	outOfDatePrintf := color.New(color.FgBlue).PrintfFunc()
+	upToDatePrintf := color.New(color.FgGreen).PrintfFunc()
 	fmt.Println()
 	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Chart Version", "App Version")
 	fmt.Printf(printFormat, "----------", "------------", "---------", "-------", "-------------", "-----------")
@@ -202,10 +202,10 @@ func main() {
 		if r.Upgradable {
 			chartVer = r.InstalledChartVersion + " -> " + r.LatestChartVersion
 			appVer = r.InstalledAppVersion + " -> " + r.LatestAppVersion
-			outOfDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, chartVer, appVer)
+			outOfDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, chartVer, appVer)
 			upgradableResults = append(upgradableResults, r)
 		} else {
-			upToDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, chartVer, appVer)
+			upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, chartVer, appVer)
 		}
 	}
 

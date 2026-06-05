@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,11 +64,11 @@ func TestCompareVersions(t *testing.T) {
 }
 
 func TestLoadRepoEntries(t *testing.T) {
-	tmpdir, err := ioutil.TempDir("", "repos")
+	tmpdir, err := os.MkdirTemp("", "repos")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tmpdir)
+	defer func() { _ = os.RemoveAll(tmpdir) }()
 
 	repoYAML := `apiVersion: v1
 repositories:
@@ -77,7 +76,7 @@ repositories:
   url: https://example.com/charts
 `
 	path := filepath.Join(tmpdir, "repositories.yaml")
-	if err := ioutil.WriteFile(path, []byte(repoYAML), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(repoYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -160,12 +159,12 @@ func TestOCIRepositoryLookup(t *testing.T) {
 	content := []byte(chartYAML)
 	// create directory entry
 	dirHdr := &tar.Header{Name: "demo/", Typeflag: tar.TypeDir, Mode: 0755}
-	tarWriter.WriteHeader(dirHdr)
+	_ = tarWriter.WriteHeader(dirHdr)
 	hdr := &tar.Header{Name: "demo/Chart.yaml", Mode: 0644, Size: int64(len(content))}
-	tarWriter.WriteHeader(hdr)
-	tarWriter.Write(content)
-	tarWriter.Close()
-	gw.Close()
+	_ = tarWriter.WriteHeader(hdr)
+	_, _ = tarWriter.Write(content)
+	_ = tarWriter.Close()
+	_ = gw.Close()
 	archiveData = buf.Bytes()
 
 	origFactory := registryClientFactory
@@ -185,11 +184,11 @@ func TestOCIRepositoryLookup(t *testing.T) {
 }
 
 func TestUpdateRepositories_Error(t *testing.T) {
-	tmpdir, err := ioutil.TempDir("", "repos")
+	tmpdir, err := os.MkdirTemp("", "repos")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tmpdir)
+	defer func() { _ = os.RemoveAll(tmpdir) }()
 
 	repoYAML := `apiVersion: v1
 repositories:
@@ -197,7 +196,7 @@ repositories:
   url: http://this-does-not-exist.invalid
 `
 	path := filepath.Join(tmpdir, "repositories.yaml")
-	if err := ioutil.WriteFile(path, []byte(repoYAML), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(repoYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	settings := cli.New()
@@ -272,7 +271,7 @@ entries:
       appVersion: 4.5.6
 `
 	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(indexYAML))
+		_, _ = w.Write([]byte(indexYAML))
 	}))
 	defer h.Close()
 
@@ -282,7 +281,7 @@ entries:
 	idx, err := searcher.loadIndex(repoEntry)
 	assert.NoError(t, err)
 	if assert.NotNil(t, idx) {
-		if ev := idx.Entries["demo"][0].Metadata.AppVersion; ev != "4.5.6" {
+		if ev := idx.Entries["demo"][0].AppVersion; ev != "4.5.6" {
 			t.Errorf("unexpected appversion %s", ev)
 		}
 	}

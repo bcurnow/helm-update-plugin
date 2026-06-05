@@ -158,7 +158,7 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 				cv := versions[0].Version
 				av := ""
 				if versions[0].Metadata != nil {
-					av = versions[0].Metadata.AppVersion
+					av = versions[0].AppVersion
 				}
 				ch <- result{repo: entry.Name, version: cv, appVersion: av}
 			}
@@ -330,9 +330,9 @@ func UpdateRepositories(settings *cli.EnvSettings) error {
 // and upgrade a release to the supplied writer.  The commands are prefixed by
 // two spaces to visually nest them beneath the release row in the output.
 func PrintUpgradeCommands(w io.Writer, release, namespace, repos, chartName, version string) {
-	fmt.Fprintf(w, "  helm get values --namespace %s %s -o yaml > %s.values\n", namespace, release, release)
-	fmt.Fprintf(w, "  cat %s.values\n", release)
-	fmt.Fprintf(w, "  helm upgrade --namespace %s %s %s/%s --version %s --values %s.values\n", namespace, release, repos, chartName, version, release)
+	_, _ = fmt.Fprintf(w, "  helm get values --namespace %s %s -o yaml > %s.values\n", namespace, release, release)
+	_, _ = fmt.Fprintf(w, "  cat %s.values\n", release)
+	_, _ = fmt.Fprintf(w, "  helm upgrade --namespace %s %s %s/%s --version %s --values %s.values\n", namespace, release, repos, chartName, version, release)
 }
 
 // convertReleaseList turns the Helm SDK's slice of *release.Release into the

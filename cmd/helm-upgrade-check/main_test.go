@@ -79,7 +79,7 @@ func TestMain_JSONOutput(t *testing.T) {
 	main()
 
 	// restore stdout and read
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 	out, _ := io.ReadAll(r)
 
@@ -148,7 +148,7 @@ func TestMain_ChartVersionDiffersFromAppVersion(t *testing.T) {
 	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
 			Repos:      []string{"ingress-nginx"},
-			Version:    "4.10.0",  // latest chart version
+			Version:    "4.10.0", // latest chart version
 			AppVersion: "1.10.1", // latest app version
 		}}
 	}
@@ -161,7 +161,7 @@ func TestMain_ChartVersionDiffersFromAppVersion(t *testing.T) {
 	os.Args = []string{"cmd", "--json"}
 	main()
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
 
@@ -305,7 +305,7 @@ func TestMain_UpdateAndHumanOutput(t *testing.T) {
 	os.Args = []string{"cmd", "--update", "--debug"}
 	main()
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
 
@@ -368,7 +368,7 @@ func TestMain_AppVersionRegression_NotUpgradable(t *testing.T) {
 	os.Args = []string{"cmd", "--json"}
 	main()
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
 
@@ -427,7 +427,7 @@ func TestMain_ChartOnlyBump_IsUpgradable(t *testing.T) {
 	os.Args = []string{"cmd", "--json"}
 	main()
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
 
