@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-06-05
+
+### Added
+
+- **Makefile targets**: `fmt` (`go fmt`), `vet` (`go vet`), `lint` (`golangci-lint run`), `check` (CI gate: vet + lint + test), `generate` (`go generate`), `bench` (benchmarks), `coverage`, `coverage-html`, `install-dev` (build and reinstall plugin locally)
+- **Chart version and app version in output**: Both chart version and app version are now shown as separate columns, each displaying `<current>` when up-to-date or `<current> -> <latest>` when an upgrade is available
+- **App version in JSON output**: New fields `installed_chart_version`, `latest_chart_version`, `installed_app_version`, `latest_app_version` in `--json` results
+- **Comprehensive release documentation**: README now includes step-by-step release instructions, noting that a git tag must exist on HEAD before `make release`
+
+### Changed
+
+- **`helm upgrade --version` now uses chart version**: Previously used the application version, which caused failures for charts where chart version and app version differ (e.g. `ingress-nginx` chart `4.9.1` / app `1.9.1`)
+- **Upgrade commands block moved below table**: All upgrade commands are printed together after the full table rather than inline with each row
+- **Repo column position**: Moved to after Namespace and before Chart Version
+- **`make all` now includes fmt and vet**: Runs `tidy fmt vet test build` instead of just `tidy test build`
+
+### Fixed
+
+- **App version regression guard**: A newer chart version is no longer flagged as an upgrade when the candidate chart ships an older application version (e.g. a chart from a different repository with higher chart version numbering but lower app version). Only suppressed when both app versions are valid semver and the candidate is strictly older; chart-only bumps and non-semver app versions still flag normally
+- **Lint issues**: Resolved all `errcheck`, `staticcheck` (deprecated `io/ioutil`), and `govet` issues reported by `golangci-lint`
+
 ## [1.0.1] - 2026-03-05
 
 Updated the name of the repository and then various references across the code base.
@@ -121,12 +142,9 @@ R = number of installed releases
 
 ### [1.1.0] (Planned)
 
-- [ ] JSON output format for integration
 - [ ] Filter by release name/namespace regex
 - [ ] Dry-run upgrade preview mode
 - [ ] Webhook/Slack notifications
-- [ ] Better pre-release version handling
-- [ ] OCI registry support
 
 ### [1.2.0] (Planned)
 
@@ -171,7 +189,9 @@ R = number of installed releases
 | Version | Date | Focus | Status |
 |---------|------|-------|--------|
 | 0.1.0 | Initial | Bash script prototype | Deprecated |
-| 1.0.0 | 2024-01-15 | Go plugin, Helm SDK, optimizations, docs | **Current** |
+| 1.0.0 | 2024-01-15 | Go plugin, Helm SDK, optimizations, docs | Released |
+| 1.0.1 | 2026-03-05 | Repository rename and reference updates | Released |
+| 1.0.2 | 2026-06-05 | Chart/app version accuracy, output improvements, Makefile CI targets | **Current** |
 
 ## Upgrade Instructions
 
