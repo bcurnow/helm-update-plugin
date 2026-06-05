@@ -83,5 +83,3 @@ release: tidy test
 	@command -v goreleaser >/dev/null 2>&1 || (echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; exit 1)
 	@echo "Building release $(VERSION) with goreleaser..."
 	goreleaser release --clean
-	@mkdir -p bin/
-	@cp -r dist/* bin/

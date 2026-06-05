@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Chart version and app version in output**: Both chart version and app version are now shown as separate columns, each displaying `<current>` when up-to-date or `<current> -> <latest>` when an upgrade is available
 - **App version in JSON output**: New fields `installed_chart_version`, `latest_chart_version`, `installed_app_version`, `latest_app_version` in `--json` results
 - **Comprehensive release documentation**: README now includes step-by-step release instructions, noting that a git tag must exist on HEAD before `make release`
+- **`scripts/install.sh`**: Install hook that detects OS and architecture at install time, downloads the correct binary from the GitHub Release assets, and places it in `$HELM_PLUGIN_DIR/bin/`. Runs automatically on `helm plugin install` and `helm plugin update`
 
 ### Changed
 
@@ -20,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Upgrade commands block moved below table**: All upgrade commands are printed together after the full table rather than inline with each row
 - **Repo column position**: Moved to after Namespace and before Chart Version
 - **`make all` now includes fmt and vet**: Runs `tidy fmt vet test build` instead of just `tidy test build`
+- **`plugin.yaml` install model**: Replaced the six `platformCommand` entries (pointing at pre-committed binaries) with an `install`/`update` hook that downloads the correct binary from the GitHub Release at install time. `plugin.yaml` now uses a single `command` path (`$HELM_PLUGIN_DIR/bin/helm-upgrade-check`) with a two-entry `platformCommand` only for the Windows `.exe` suffix
+- **GoReleaser now produces `tar.gz` archives**: Changed from `formats: [binary]` to `formats: [tar.gz]` so the install hook can download and extract predictably-named archives
 
 ### Fixed
 

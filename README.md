@@ -292,12 +292,17 @@ before running the release target.
 
    This runs `goreleaser release --clean`, which:
    - Builds binaries for Linux, macOS, and Windows (amd64 + arm64)
+   - Packages each binary into a `tar.gz` archive named `helm-upgrade-check-plugin_<version>_<os>_<arch>.tar.gz`
    - Generates `checksums.txt`
-   - Publishes a GitHub Release with all binaries attached
+   - Publishes a GitHub Release with all archives attached
    - Injects the version into the binary via `-X main.Version`
 
    > **Note:** `make release` will fail if no tag exists on `HEAD`. Always push
    > the tag before running it.
+
+   After the GitHub Release is published, `helm plugin install` and
+   `helm plugin update` will automatically download the correct archive via
+   `scripts/install.sh` — no manual binary copying is required.
 
 ## Troubleshooting
 

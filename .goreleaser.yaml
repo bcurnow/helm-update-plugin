@@ -27,7 +27,8 @@ builds:
     mod_timestamp: '{{ .CommitTimestamp }}'
 
 archives:
-  - formats: [binary]
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: 'checksums.txt'
