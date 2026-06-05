@@ -185,22 +185,38 @@ func main() {
 		return
 	}
 
-	// Human output: print table and missing charts
-	printFormat := "%-20s %-15s %-15s %-13s %-13s %-13s %-13s %-15s\n"
+	// Human output: print table then upgrade commands.
+	// Version columns show "<current>" when up-to-date or "<current> -> <latest>"
+	// when an upgrade is available.
+	printFormat := "%-25s %-25s %-25s %-25s %-35s %-35s\n"
 	outOfDate := color.New(color.FgBlue)
 	upToDate := color.New(color.FgGreen)
 	fmt.Println()
-	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Chart Ver", "Latest Chart", "App Ver", "Latest App", "Repo(s)")
-	fmt.Printf(printFormat, "----------", "------------", "---------", "---------", "------------", "-------", "----------", "-------")
+	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Chart Version", "App Version")
+	fmt.Printf(printFormat, "----------", "------------", "---------", "-------", "-------------", "-----------")
+	var upgradableResults []resultItem
 	for _, r := range results {
 		repoListStr := strings.Join(r.Repos, ",")
+		chartVer := r.InstalledChartVersion
+		appVer := r.InstalledAppVersion
 		if r.Upgradable {
-			outOfDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, r.InstalledChartVersion, r.LatestChartVersion, r.InstalledAppVersion, r.LatestAppVersion, repoListStr)
+			chartVer = r.InstalledChartVersion + " -> " + r.LatestChartVersion
+			appVer = r.InstalledAppVersion + " -> " + r.LatestAppVersion
+			outOfDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, chartVer, appVer)
+			upgradableResults = append(upgradableResults, r)
+		} else {
+			upToDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, chartVer, appVer)
+		}
+	}
+
+	if len(upgradableResults) > 0 {
+		fmt.Println("\n\nUpgrade commands:")
+		fmt.Println("─────────────────────────────────────────────────────────────────────────────────────")
+		for _, r := range upgradableResults {
+			fmt.Printf("\n%s (%s):\n", r.ReleaseName, r.Namespace)
 			for _, cmd := range r.Commands {
 				fmt.Printf("  %s\n", cmd)
 			}
-		} else {
-			upToDate.Printf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, r.InstalledChartVersion, r.LatestChartVersion, r.InstalledAppVersion, r.LatestAppVersion, repoListStr)
 		}
 	}
 
