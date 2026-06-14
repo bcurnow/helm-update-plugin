@@ -1,9 +1,10 @@
-.PHONY: all build test bench clean tidy fmt vet lint check generate install-dev help release prepare-release version coverage coverage-html _check-plugin-version
+.PHONY: all build test bench clean tidy fmt vet lint check generate install-dev help release prepare-release version coverage coverage-html _check-plugin-version test-release
 
 BINARY_NAME=helm-upgrade-check
 BIN_DIR=bin
 CMD_DIR=cmd/$(BINARY_NAME)
 VERSION=$(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev")
+export GPG_KEY_NAME ?= $(shell gpg --list-secret-keys --with-colons | grep '^uid' | grep 'dev@curnowtopia.com' | head -n 1 | cut -d':' -f10)
 
 all: tidy fmt vet test build
 
@@ -94,6 +95,19 @@ _check-plugin-version:
 	fi
 
 release: tidy test _check-plugin-version
-	@command -v goreleaser >/dev/null 2>&1 || (echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; exit 1)
+	@if [ -z "$(GPG_KEY_NAME)" ]; then \
+		echo "Error: No local GPG key found. Run 'gpg --generate-key' first."; \
+		exit 1; \
+	fi
+	@echo "Using GPG Key Name: $(GPG_KEY_NA	@command -v goreleaser >/dev/null 2>&1 || (echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; exit 1)
 	@echo "Building release $(VERSION) with goreleaser..."
 	goreleaser release --clean
+
+test-release:
+	@if [ -z "$(GPG_KEY_NAME)" ]; then \
+		echo "Error: No local GPG key found. Run 'gpg --generate-key' first."; \
+		exit 1; \
+	fi
+	@echo "Using GPG Key Name: $(GPG_KEY_NAME)"
+	# Run goreleaser locally in snapshot mode, cleaning up old artifacts first
+	goreleaser release --skip=publish --clean
