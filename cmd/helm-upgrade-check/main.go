@@ -87,7 +87,7 @@ func main() {
 	}
 
 	getters := getter.All(settings)
-	searcher := newChartSearcherFunc(repoEntries, getters)
+	searcher := newChartSearcherFunc(repoEntries, getters, includePrerel)
 
 	if !jsonOut {
 		fmt.Print("Fetching Helm releases from all namespaces...")
@@ -189,23 +189,33 @@ func main() {
 	// Version columns show "<current>" when up-to-date or "<current> -> <latest>"
 	// when an upgrade is available.
 	printFormat := "%-25s %-25s %-25s %-25s %-35s %-35s\n"
-	outOfDatePrintf := color.New(color.FgBlue).PrintfFunc()
 	upToDatePrintf := color.New(color.FgGreen).PrintfFunc()
+	redSprint := color.New(color.FgRed).SprintFunc()
+	blueSprint := color.New(color.FgBlue).SprintFunc()
+	// versionCol builds a version upgrade string "old -> new" with the old
+	// version in red and the new version in blue, padded to width visible chars.
+	// We pad manually because %-Ns counts ANSI escape bytes toward the width.
+	versionCol := func(old, latest string, width int) string {
+		pad := width - len(old) - len(" -> ") - len(latest)
+		if pad < 0 {
+			pad = 0
+		}
+		return redSprint(old) + " -> " + blueSprint(latest) + strings.Repeat(" ", pad)
+	}
 	fmt.Println()
 	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Chart Version", "App Version")
 	fmt.Printf(printFormat, "----------", "------------", "---------", "-------", "-------------", "-----------")
 	var upgradableResults []resultItem
 	for _, r := range results {
 		repoListStr := strings.Join(r.Repos, ",")
-		chartVer := r.InstalledChartVersion
-		appVer := r.InstalledAppVersion
 		if r.Upgradable {
-			chartVer = r.InstalledChartVersion + " -> " + r.LatestChartVersion
-			appVer = r.InstalledAppVersion + " -> " + r.LatestAppVersion
-			outOfDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, chartVer, appVer)
+			fmt.Printf("%-25s %-25s %-25s %-25s %s %s\n",
+				r.ChartName, r.ReleaseName, r.Namespace, repoListStr,
+				versionCol(r.InstalledChartVersion, r.LatestChartVersion, 35),
+				versionCol(r.InstalledAppVersion, r.LatestAppVersion, 35))
 			upgradableResults = append(upgradableResults, r)
 		} else {
-			upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, chartVer, appVer)
+			upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, r.InstalledChartVersion, r.InstalledAppVersion)
 		}
 	}
 
@@ -247,6 +257,6 @@ var fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradech
 	return upgradecheck.FetchReleases(settings, debug)
 }
 
-var newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
-	return upgradecheck.NewChartSearcher(repos, getters)
+var newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
+	return upgradecheck.NewChartSearcher(repos, getters, includePrerel)
 }

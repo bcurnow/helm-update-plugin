@@ -60,7 +60,7 @@ func TestMain_JSONOutput(t *testing.T) {
 		return []upgradecheck.Release{{Name: "rel1", Namespace: "ns", Chart: "mychart-1.0", ChartVersion: "1.0", AppVersion: "1.0"}}, nil
 	}
 
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{Repos: []string{"testrepo"}, Version: "2.0", AppVersion: "2.0-app"}}
 	}
 
@@ -145,7 +145,7 @@ func TestMain_ChartVersionDiffersFromAppVersion(t *testing.T) {
 			AppVersion:   "1.9.1",
 		}}, nil
 	}
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
 			Repos:      []string{"ingress-nginx"},
 			Version:    "4.10.0", // latest chart version
@@ -292,7 +292,7 @@ func TestMain_UpdateAndHumanOutput(t *testing.T) {
 		}, nil
 	}
 	// first searcher returns upgrade info for chart c only
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{Repos: []string{"repo"}, Version: "2.0"}}
 	}
 
@@ -352,7 +352,7 @@ func TestMain_AppVersionRegression_NotUpgradable(t *testing.T) {
 			AppVersion:   "1.19.1",
 		}}, nil
 	}
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
 			Repos:      []string{"some-repo"},
 			Version:    "3.1.9",  // higher chart version …
@@ -411,7 +411,7 @@ func TestMain_ChartOnlyBump_IsUpgradable(t *testing.T) {
 			AppVersion:   "2.0.0",
 		}}, nil
 	}
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
 			Repos:      []string{"myrepo"},
 			Version:    "1.1.0", // chart version bumped …
