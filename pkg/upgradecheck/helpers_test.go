@@ -90,21 +90,24 @@ repositories:
 	}
 }
 
-func TestChartSearcher_Search(t *testing.T) {
+func TestChartSearcher_Search_BitnamiExcluded(t *testing.T) {
+	// When a chart exists in both a non-bitnami repo and bitnami, bitnami's
+	// version must NOT influence the result — bitnami uses independent version
+	// numbering that is incompatible with upstream chart versions.
 	repos := []*repo.Entry{
 		{Name: "r1"},
 		{Name: "bitnami"},
 	}
 	searcher := NewChartSearcher(repos, "", false)
 
-	// r1 has chart version 1.0.0 / app version 7.0.0
-	// Version is set via Metadata (repo.ChartVersion embeds *chartv2.Metadata).
+	// r1 has upstream chart version 1.0.0
 	searcher.idxCache["r1"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
 			"redis": {&repo.ChartVersion{Metadata: &chartv2.Metadata{Version: "1.0.0", AppVersion: "7.0.0"}}},
 		},
 	}
-	// bitnami has a higher chart version 2.0.0 / app version 7.2.0
+	// bitnami has a higher-looking version 2.0.0 but it is on bitnami's own
+	// numbering scheme and must not override the upstream version.
 	searcher.idxCache["bitnami"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
 			"redis": {&repo.ChartVersion{Metadata: &chartv2.Metadata{Version: "2.0.0", AppVersion: "7.2.0"}}},
@@ -112,17 +115,40 @@ func TestChartSearcher_Search(t *testing.T) {
 	}
 
 	res := searcher.Search("redis")
-	// Version is the latest chart version (bitnami's 2.0.0 wins the comparison)
-	assert.Equal(t, "2.0.0", res.Version)
-	// AppVersion comes from the winning entry (bitnami 7.2.0)
-	assert.Equal(t, "7.2.0", res.AppVersion)
-	// Repos has bitnami removed by the dedup rule; r1 is kept
+	// Bitnami is excluded from version selection because r1 also has the chart.
+	// The result must come from r1 only.
+	assert.Equal(t, "1.0.0", res.Version)
+	assert.Equal(t, "7.0.0", res.AppVersion)
 	assert.Equal(t, []string{"r1"}, res.Repos)
 
 	// ensure caching works
 	searcher.idxCache = map[string]*repo.IndexFile{}
 	res2 := searcher.Search("redis")
 	assert.Equal(t, res, res2)
+}
+
+func TestChartSearcher_Search_BitnamiOnlyFallback(t *testing.T) {
+	// When bitnami is the ONLY repo that has the chart, use bitnami's version.
+	repos := []*repo.Entry{
+		{Name: "r1"},
+		{Name: "bitnami"},
+	}
+	searcher := NewChartSearcher(repos, "", false)
+
+	// r1 does not have the chart
+	searcher.idxCache["r1"] = &repo.IndexFile{
+		Entries: map[string]repo.ChartVersions{},
+	}
+	searcher.idxCache["bitnami"] = &repo.IndexFile{
+		Entries: map[string]repo.ChartVersions{
+			"redis": {&repo.ChartVersion{Metadata: &chartv2.Metadata{Version: "19.0.0", AppVersion: "7.4.0"}}},
+		},
+	}
+
+	res := searcher.Search("redis")
+	assert.Equal(t, "19.0.0", res.Version)
+	assert.Equal(t, "7.4.0", res.AppVersion)
+	assert.Equal(t, []string{"bitnami"}, res.Repos)
 }
 
 func TestChartSearcher_NoChart(t *testing.T) {

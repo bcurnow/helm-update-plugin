@@ -194,9 +194,42 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 		close(ch)
 	}()
 
+	// Collect all per-repo results into a slice so we can apply the bitnami
+	// deduplication rule to both the version selection AND the repo list.
+	type repoResult struct {
+		repo, version, appVersion string
+	}
+	var all []repoResult
+	for r := range ch {
+		all = append(all, repoResult{r.repo, r.version, r.appVersion})
+	}
+
+	// If the chart was found in at least one non-bitnami repo, drop bitnami
+	// results entirely before selecting the winning version.  Bitnami uses its
+	// own independent version numbering that is incompatible with upstream chart
+	// versions, so mixing bitnami and upstream versions produces incorrect
+	// comparisons (e.g. bitnami/cilium 3.1.9 vs upstream cilium 1.19.4).
+	hasNonBitnami := false
+	for _, r := range all {
+		if r.repo != "bitnami" {
+			hasNonBitnami = true
+			break
+		}
+	}
+	candidates := all
+	if hasNonBitnami {
+		filtered := all[:0]
+		for _, r := range all {
+			if r.repo != "bitnami" {
+				filtered = append(filtered, r)
+			}
+		}
+		candidates = filtered
+	}
+
 	uniq := make(map[string]struct{})
 	var latestChartVer, latestAppVer string
-	for r := range ch {
+	for _, r := range candidates {
 		uniq[r.repo] = struct{}{}
 		if latestChartVer == "" || CompareVersions(r.version, latestChartVer, s.includePrerel) {
 			latestChartVer = r.version
@@ -206,19 +239,6 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 	reposFound := make([]string, 0, len(uniq))
 	for k := range uniq {
 		reposFound = append(reposFound, k)
-	}
-
-	if len(reposFound) > 1 {
-		keep := make([]string, 0, len(reposFound))
-		for _, r := range reposFound {
-			if r == "bitnami" {
-				continue
-			}
-			keep = append(keep, r)
-		}
-		if len(keep) > 0 {
-			reposFound = keep
-		}
 	}
 
 	res := ChartSearchResult{Repos: reposFound, Version: latestChartVer, AppVersion: latestAppVer}
