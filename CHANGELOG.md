@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-06-14
+
+### Fixed
+
+- **Pre-release versions masking available stable upgrades**: The chart searcher was taking `versions[0]` from each repo index, which Helm sorts newest-first including pre-releases. If the top entry was e.g. `1.20.0-rc.1`, the subsequent `CompareVersions` call with `--include-prerelease=false` returned false and the release appeared up-to-date even though a newer stable version (e.g. `1.19.4`) was available. The searcher now iterates the index and skips pre-release entries unless `--include-prerelease` is set.
+
+### Changed
+
+- **Upgrade row color scheme**: Rows with an available upgrade now display the installed version in red and the latest version in blue (e.g. `1.19.1 -> 1.19.4`) instead of the entire row in a single blue. Makes version transitions immediately visible at a glance.
+- **Makefile `VERSION` derived from git tag**: `VERSION` is now computed via `git describe --tags --abbrev=0` rather than hardcoded, so the Makefile no longer needs to be edited before each release.
+
 ## [1.0.2] - 2026-06-05
 
 ### Added
@@ -194,7 +205,8 @@ R = number of installed releases
 | 0.1.0 | Initial | Bash script prototype | Deprecated |
 | 1.0.0 | 2024-01-15 | Go plugin, Helm SDK, optimizations, docs | Released |
 | 1.0.1 | 2026-03-05 | Repository rename and reference updates | Released |
-| 1.0.2 | 2026-06-05 | Chart/app version accuracy, output improvements, Makefile CI targets | **Current** |
+| 1.0.2 | 2026-06-05 | Chart/app version accuracy, output improvements, Makefile CI targets | Released |
+| 1.0.3 | 2026-06-14 | Fix pre-release masking stable upgrades; red/blue upgrade color scheme | **Current** |
 
 ## Upgrade Instructions
 

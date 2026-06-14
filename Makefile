@@ -3,7 +3,7 @@
 BINARY_NAME=helm-upgrade-check
 BIN_DIR=bin
 CMD_DIR=cmd/$(BINARY_NAME)
-VERSION=1.0.2
+VERSION=$(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev")
 
 all: tidy fmt vet test build
 
