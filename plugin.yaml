@@ -1,10 +1,18 @@
+apiVersion: v1
 name: "upgrade-check"
-version: "1.0.3"
-usage: "check for available upgrades to installed Helm releases"
-description: "Identifies Helm releases deployed to the cluster and reports which have newer versions available in configured repositories. Provides upgrade commands for out-of-date releases."
-command: "$HELM_PLUGIN_DIR/bin/helm-upgrade-check"
-hooks:
-  install: "$HELM_PLUGIN_DIR/scripts/install.sh"
-  update: "$HELM_PLUGIN_DIR/scripts/install.sh"
-ignoreFlags: false
-useTunnel: false
+type: cli/v1
+version: "2.0.0"
+runtime: subprocess
+config:
+  usage: "check for available upgrades to installed Helm releases"
+  shortHelp: "check for available upgrades to installed Helm releases"
+  longHelp: "Identifies Helm releases deployed to the cluster and reports which have newer versions available in configured repositories. Provides upgrade commands for out-of-date releases."
+  ignoreFlags: false
+runtimeConfig:
+  platformCommand:
+    - command: "$HELM_PLUGIN_DIR/bin/helm-upgrade-check"
+  platformHooks:
+    install:
+      - command: "$HELM_PLUGIN_DIR/scripts/install.sh"
+    update:
+      - command: "$HELM_PLUGIN_DIR/scripts/install.sh"

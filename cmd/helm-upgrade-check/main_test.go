@@ -27,9 +27,8 @@ import (
 
 	"helm-upgrade-check-plugin/pkg/upgradecheck"
 
-	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/getter"
-	"helm.sh/helm/v3/pkg/repo"
+	"helm.sh/helm/v4/pkg/cli"
+	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
 
 type fakeSearcher struct {
@@ -60,7 +59,7 @@ func TestMain_JSONOutput(t *testing.T) {
 		return []upgradecheck.Release{{Name: "rel1", Namespace: "ns", Chart: "mychart-1.0", ChartVersion: "1.0", AppVersion: "1.0"}}, nil
 	}
 
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{Repos: []string{"testrepo"}, Version: "2.0", AppVersion: "2.0-app"}}
 	}
 
@@ -145,7 +144,7 @@ func TestMain_ChartVersionDiffersFromAppVersion(t *testing.T) {
 			AppVersion:   "1.9.1",
 		}}, nil
 	}
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
 			Repos:      []string{"ingress-nginx"},
 			Version:    "4.10.0", // latest chart version
@@ -262,25 +261,17 @@ func TestMain_FetchReleasesError(t *testing.T) {
 	main()
 }
 
-func TestMain_UpdateAndHumanOutput(t *testing.T) {
+func TestMain_HumanOutput(t *testing.T) {
 	origLoad := loadRepoEntriesFunc
 	origFetch := fetchReleasesFunc
 	origNew := newChartSearcherFunc
-	origUpdate := updateRepositoriesFunc
 	origArgs := os.Args
 	defer func() {
 		loadRepoEntriesFunc = origLoad
 		fetchReleasesFunc = origFetch
 		newChartSearcherFunc = origNew
-		updateRepositoriesFunc = origUpdate
 		os.Args = origArgs
 	}()
-
-	updated := false
-	updateRepositoriesFunc = func(settings *cli.EnvSettings) error {
-		updated = true
-		return nil
-	}
 
 	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
 		return []*repo.Entry{}, nil
@@ -291,32 +282,24 @@ func TestMain_UpdateAndHumanOutput(t *testing.T) {
 			{Name: "r2", Namespace: "ns", Chart: "d-2.0", ChartVersion: "2.0", AppVersion: "2.0"},
 		}, nil
 	}
-	// first searcher returns upgrade info for chart c only
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{Repos: []string{"repo"}, Version: "2.0"}}
 	}
 
-	// capture stdout
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
 
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-	os.Args = []string{"cmd", "--update", "--debug"}
+	os.Args = []string{"cmd", "--debug"}
 	main()
 
 	_ = w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
 
-	if !updated {
-		t.Fatalf("expected updateRepositoriesFunc to be called")
-	}
 	if !strings.Contains(string(out), "Debug:") {
 		t.Fatalf("debug message not printed")
-	}
-	if !strings.Contains(string(out), "Updating Helm repositories") {
-		t.Fatalf("update message missing")
 	}
 	if !strings.Contains(string(out), "Loading repository list") {
 		t.Fatalf("load message missing")
@@ -352,7 +335,7 @@ func TestMain_AppVersionRegression_NotUpgradable(t *testing.T) {
 			AppVersion:   "1.19.1",
 		}}, nil
 	}
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
 			Repos:      []string{"some-repo"},
 			Version:    "3.1.9",  // higher chart version …
@@ -411,7 +394,7 @@ func TestMain_ChartOnlyBump_IsUpgradable(t *testing.T) {
 			AppVersion:   "2.0.0",
 		}}, nil
 	}
-	newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
 			Repos:      []string{"myrepo"},
 			Version:    "1.1.0", // chart version bumped …

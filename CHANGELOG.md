@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Index lookup now reads the local Helm cache** — the plugin no longer downloads repository indexes from the network on each run. Instead it reads the same `$HELM_REPOSITORY_CACHE/<repo>-index.yaml` files that `helm search repo` uses (populated by `helm repo update`). This aligns the plugin's view of available versions with the rest of the Helm toolchain and avoids redundant network traffic.
+
+### Removed
+
+- **`--update` / `-u` flag** — replaced by the standard `helm repo update` workflow. Run `helm repo update` before `helm upgrade-check` the same way you would before `helm search repo`.
+
+## [2.0.0] - 2026-06-14
+
+### Changed
+
+- **Helm 4 SDK migration**: All Go source imports updated from `helm.sh/helm/v3` to `helm.sh/helm/v4`. The plugin now uses the Helm 4 SDK's accessor pattern (`release.NewAccessor`, `chart.NewAccessor`) to read release and chart metadata, and `settings.RESTClientGetter()` instead of constructing `genericclioptions.ConfigFlags` directly. Repository types use `helm.sh/helm/v4/pkg/repo/v1`, chart types use `helm.sh/helm/v4/pkg/chart/v2`, and concrete release types use `helm.sh/helm/v4/pkg/release/v1`.
+- **Helm 4 plugin manifest**: `plugin.yaml` migrated to the Helm 4 `cli/v1` schema (`apiVersion: v1`, `type: cli/v1`, `runtime: subprocess`, `runtimeConfig`). The plugin now installs natively under Helm 4 and no longer supports the Helm 3 CLI.
+
+### Breaking Changes
+
+- **Requires Helm 4**: The plugin binary is built against the Helm 4 Go SDK and the `plugin.yaml` uses the Helm 4 manifest schema. It cannot be installed under Helm 3.
+
 ## [1.0.3] - 2026-06-14
 
 ### Fixed

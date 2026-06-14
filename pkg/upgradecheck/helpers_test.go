@@ -21,19 +21,18 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/getter"
-	"helm.sh/helm/v3/pkg/registry"
-	"helm.sh/helm/v3/pkg/release"
-	"helm.sh/helm/v3/pkg/repo"
+	chartv2 "helm.sh/helm/v4/pkg/chart/v2"
+	"helm.sh/helm/v4/pkg/cli"
+	"helm.sh/helm/v4/pkg/helmpath"
+	"helm.sh/helm/v4/pkg/registry"
+	"helm.sh/helm/v4/pkg/release"
+	releasev1 "helm.sh/helm/v4/pkg/release/v1"
+	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
 
 func TestCompareVersions(t *testing.T) {
@@ -96,19 +95,19 @@ func TestChartSearcher_Search(t *testing.T) {
 		{Name: "r1"},
 		{Name: "bitnami"},
 	}
-	searcher := NewChartSearcher(repos, nil, false)
+	searcher := NewChartSearcher(repos, "", false)
 
 	// r1 has chart version 1.0.0 / app version 7.0.0
-	// Version is set via Metadata (repo.ChartVersion embeds *chart.Metadata).
+	// Version is set via Metadata (repo.ChartVersion embeds *chartv2.Metadata).
 	searcher.idxCache["r1"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
-			"redis": {&repo.ChartVersion{Metadata: &chart.Metadata{Version: "1.0.0", AppVersion: "7.0.0"}}},
+			"redis": {&repo.ChartVersion{Metadata: &chartv2.Metadata{Version: "1.0.0", AppVersion: "7.0.0"}}},
 		},
 	}
 	// bitnami has a higher chart version 2.0.0 / app version 7.2.0
 	searcher.idxCache["bitnami"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
-			"redis": {&repo.ChartVersion{Metadata: &chart.Metadata{Version: "2.0.0", AppVersion: "7.2.0"}}},
+			"redis": {&repo.ChartVersion{Metadata: &chartv2.Metadata{Version: "2.0.0", AppVersion: "7.2.0"}}},
 		},
 	}
 
@@ -128,7 +127,7 @@ func TestChartSearcher_Search(t *testing.T) {
 
 func TestChartSearcher_NoChart(t *testing.T) {
 	repos := []*repo.Entry{{Name: "empty"}}
-	s := NewChartSearcher(repos, nil, false)
+	s := NewChartSearcher(repos, "", false)
 	r := s.Search("nonexistent")
 	assert.Empty(t, r.Repos)
 	assert.Equal(t, "", r.Version)
@@ -174,36 +173,13 @@ func TestOCIRepositoryLookup(t *testing.T) {
 	defer func() { registryClientFactory = origFactory }()
 
 	repoEntry := &repo.Entry{Name: "ociRepo", URL: "oci://example.com/charts/mychart"}
-	s := NewChartSearcher([]*repo.Entry{repoEntry}, nil, false)
+	s := NewChartSearcher([]*repo.Entry{repoEntry}, "", false)
 
 	res := s.Search("mychart")
 	// Version is the chart version (OCI tag "1.0.0"), not the app version.
 	assert.Equal(t, "1.0.0", res.Version)
 	assert.Equal(t, "5.5.5", res.AppVersion)
 	assert.Equal(t, []string{"ociRepo"}, res.Repos)
-}
-
-func TestUpdateRepositories_Error(t *testing.T) {
-	tmpdir, err := os.MkdirTemp("", "repos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.RemoveAll(tmpdir) }()
-
-	repoYAML := `apiVersion: v1
-repositories:
-- name: bad
-  url: http://this-does-not-exist.invalid
-`
-	path := filepath.Join(tmpdir, "repositories.yaml")
-	if err := os.WriteFile(path, []byte(repoYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	settings := cli.New()
-	settings.RepositoryConfig = path
-
-	err = UpdateRepositories(settings)
-	assert.Error(t, err)
 }
 
 func TestPrintUpgradeCommands(t *testing.T) {
@@ -215,12 +191,12 @@ func TestPrintUpgradeCommands(t *testing.T) {
 }
 
 func TestConvertReleaseList(t *testing.T) {
-	helmRel := &release.Release{
+	helmRel := &releasev1.Release{
 		Name:      "r",
 		Namespace: "n",
-		Chart:     &chart.Chart{Metadata: &chart.Metadata{Version: "1.2.3", AppVersion: "5.6.7"}},
+		Chart:     &chartv2.Chart{Metadata: &chartv2.Metadata{Version: "1.2.3", AppVersion: "5.6.7"}},
 	}
-	out := convertReleaseList([]*release.Release{helmRel})
+	out := convertReleaseList([]release.Releaser{helmRel})
 	if assert.Len(t, out, 1) {
 		assert.Equal(t, "r", out[0].Name)
 		assert.Equal(t, "n", out[0].Namespace)
@@ -233,12 +209,12 @@ func TestConvertReleaseList(t *testing.T) {
 func TestConvertReleaseList_ChartVersionDiffersFromAppVersion(t *testing.T) {
 	// ingress-nginx is a real-world example: chart 4.9.1, app 1.9.1.
 	// ChartVersion must carry the chart version, not the app version.
-	helmRel := &release.Release{
+	helmRel := &releasev1.Release{
 		Name:      "ingress-nginx",
 		Namespace: "ingress",
-		Chart:     &chart.Chart{Metadata: &chart.Metadata{Name: "ingress-nginx", Version: "4.9.1", AppVersion: "1.9.1"}},
+		Chart:     &chartv2.Chart{Metadata: &chartv2.Metadata{Name: "ingress-nginx", Version: "4.9.1", AppVersion: "1.9.1"}},
 	}
-	out := convertReleaseList([]*release.Release{helmRel})
+	out := convertReleaseList([]release.Releaser{helmRel})
 	if assert.Len(t, out, 1) {
 		assert.Equal(t, "ingress-nginx-4.9.1", out[0].Chart)
 		assert.Equal(t, "4.9.1", out[0].ChartVersion)
@@ -261,22 +237,33 @@ func TestFindHelpers(t *testing.T) {
 	}
 }
 
-func TestLoadIndex_FileURL(t *testing.T) {
-	// host a minimal index file via HTTP so repo.NewChartRepository works
+func TestLoadIndex_CachedFile(t *testing.T) {
+	// Write a minimal index file into a temp cache directory, simulating what
+	// `helm repo update` produces, and verify loadIndex reads it correctly.
 	indexYAML := `apiVersion: v1
+generated: "2026-01-01T00:00:00Z"
 entries:
   demo:
     - name: demo
+      apiVersion: v2
       version: 0.1.0
       appVersion: 4.5.6
+      urls:
+        - https://example.com/demo-0.1.0.tgz
 `
-	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(indexYAML))
-	}))
-	defer h.Close()
+	cacheDir, err := os.MkdirTemp("", "helm-cache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(cacheDir) }()
 
-	repoEntry := &repo.Entry{Name: "local", URL: h.URL}
-	searcher := NewChartSearcher([]*repo.Entry{repoEntry}, getter.All(cli.New()), false)
+	indexFile := filepath.Join(cacheDir, helmpath.CacheIndexFile("local"))
+	if err := os.WriteFile(indexFile, []byte(indexYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoEntry := &repo.Entry{Name: "local", URL: "https://example.com"}
+	searcher := NewChartSearcher([]*repo.Entry{repoEntry}, cacheDir, false)
 
 	idx, err := searcher.loadIndex(repoEntry)
 	assert.NoError(t, err)
@@ -285,7 +272,7 @@ entries:
 			t.Errorf("unexpected appversion %s", ev)
 		}
 	}
-	// second call should hit cache
+	// second call should hit the in-memory cache
 	idx2, err := searcher.loadIndex(repoEntry)
 	assert.NoError(t, err)
 	assert.Equal(t, idx, idx2)
@@ -296,13 +283,13 @@ func TestChartSearcher_PrerelFiltering_StableReturned(t *testing.T) {
 	// but a stable version exists behind it.  With includePrerel=false the
 	// searcher must skip the pre-release and return the latest stable.
 	repos := []*repo.Entry{{Name: "cilium"}}
-	s := NewChartSearcher(repos, nil, false)
+	s := NewChartSearcher(repos, "", false)
 	s.idxCache["cilium"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
 			"cilium": {
-				{Metadata: &chart.Metadata{Version: "1.20.0-rc.1", AppVersion: "1.20.0-rc.1"}},
-				{Metadata: &chart.Metadata{Version: "1.19.4", AppVersion: "1.19.4"}},
-				{Metadata: &chart.Metadata{Version: "1.19.1", AppVersion: "1.19.1"}},
+				{Metadata: &chartv2.Metadata{Version: "1.20.0-rc.1", AppVersion: "1.20.0-rc.1"}},
+				{Metadata: &chartv2.Metadata{Version: "1.19.4", AppVersion: "1.19.4"}},
+				{Metadata: &chartv2.Metadata{Version: "1.19.1", AppVersion: "1.19.1"}},
 			},
 		},
 	}
@@ -315,12 +302,12 @@ func TestChartSearcher_PrerelFiltering_StableReturned(t *testing.T) {
 func TestChartSearcher_PrerelFiltering_PrerelReturnedWhenEnabled(t *testing.T) {
 	// With includePrerel=true the pre-release at the top of the index wins.
 	repos := []*repo.Entry{{Name: "cilium"}}
-	s := NewChartSearcher(repos, nil, true)
+	s := NewChartSearcher(repos, "", true)
 	s.idxCache["cilium"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
 			"cilium": {
-				{Metadata: &chart.Metadata{Version: "1.20.0-rc.1", AppVersion: "1.20.0-rc.1"}},
-				{Metadata: &chart.Metadata{Version: "1.19.4", AppVersion: "1.19.4"}},
+				{Metadata: &chartv2.Metadata{Version: "1.20.0-rc.1", AppVersion: "1.20.0-rc.1"}},
+				{Metadata: &chartv2.Metadata{Version: "1.19.4", AppVersion: "1.19.4"}},
 			},
 		},
 	}

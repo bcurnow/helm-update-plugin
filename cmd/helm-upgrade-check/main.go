@@ -26,23 +26,19 @@ import (
 	"helm-upgrade-check-plugin/pkg/upgradecheck"
 
 	"github.com/fatih/color"
-	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/getter"
-	"helm.sh/helm/v3/pkg/repo"
+	"helm.sh/helm/v4/pkg/cli"
+	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
 
 var exitFunc = os.Exit
 var Version = "dev"
 
 func main() {
-	var update bool
 	var debug bool
 	var jsonOut bool
 	var version bool
 	var includePrerel bool
 
-	flag.BoolVar(&update, "update", false, "run 'helm repo update' before checking")
-	flag.BoolVar(&update, "u", false, "shorthand for --update")
 	flag.BoolVar(&debug, "debug", false, "enable debug output")
 	flag.BoolVar(&debug, "d", false, "shorthand for --debug")
 	flag.BoolVar(&jsonOut, "json", false, "output results as JSON")
@@ -61,19 +57,6 @@ func main() {
 		fmt.Printf("Debug: kubeconfig=%s, namespace=%s\n", settings.KubeConfig, settings.Namespace())
 	}
 
-	if update {
-		if !jsonOut {
-			fmt.Print("Updating Helm repositories...")
-		}
-		if err := updateRepositoriesFunc(settings); err != nil {
-			fmt.Fprintln(os.Stderr, "error updating helm repos:", err)
-			exitFunc(1)
-		}
-		if !jsonOut {
-			fmt.Println("done!")
-		}
-	}
-
 	if !jsonOut {
 		fmt.Print("Loading repository list...")
 	}
@@ -86,8 +69,7 @@ func main() {
 		fmt.Println("done!")
 	}
 
-	getters := getter.All(settings)
-	searcher := newChartSearcherFunc(repoEntries, getters, includePrerel)
+	searcher := newChartSearcherFunc(repoEntries, settings.RepositoryCache, includePrerel)
 
 	if !jsonOut {
 		fmt.Print("Fetching Helm releases from all namespaces...")
@@ -249,14 +231,10 @@ var loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error)
 	return upgradecheck.LoadRepoEntries(settings)
 }
 
-var updateRepositoriesFunc = func(settings *cli.EnvSettings) error {
-	return upgradecheck.UpdateRepositories(settings)
-}
-
 var fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
 	return upgradecheck.FetchReleases(settings, debug)
 }
 
-var newChartSearcherFunc = func(repos []*repo.Entry, getters getter.Providers, includePrerel bool) chartSearcher {
-	return upgradecheck.NewChartSearcher(repos, getters, includePrerel)
+var newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
+	return upgradecheck.NewChartSearcher(repos, cacheDir, includePrerel)
 }

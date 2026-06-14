@@ -22,20 +22,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	semver "github.com/Masterminds/semver/v3"
-	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/chart/loader"
-	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/getter"
-	"helm.sh/helm/v3/pkg/registry"
-	"helm.sh/helm/v3/pkg/release"
-	"helm.sh/helm/v3/pkg/repo"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"helm.sh/helm/v4/pkg/action"
+	"helm.sh/helm/v4/pkg/chart"
+	"helm.sh/helm/v4/pkg/chart/loader"
+	chartv2 "helm.sh/helm/v4/pkg/chart/v2"
+	"helm.sh/helm/v4/pkg/cli"
+	"helm.sh/helm/v4/pkg/helmpath"
+	"helm.sh/helm/v4/pkg/registry"
+	"helm.sh/helm/v4/pkg/release"
+	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
 
 // CompareVersions returns true if v1 > v2 using a simple semver comparison.
@@ -97,25 +97,31 @@ type ChartSearchResult struct {
 
 // ChartSearcher performs on-demand lookups of repository indexes to resolve
 // the latest version of a chart.  Results and index files are cached to avoid
-// repeated network requests when scanning many releases.
+// repeated disk reads when scanning many releases.
 type ChartSearcher struct {
 	repos         []*repo.Entry
-	getters       getter.Providers
 	idxCache      map[string]*repo.IndexFile
 	resultMap     map[string]ChartSearchResult
 	includePrerel bool
+	cacheDir      string // directory containing cached repo index files
 }
 
 // NewChartSearcher constructs a searcher using the provided repositories and
-// HTTP getter providers.  When includePrerel is false, pre-release chart
-// versions are skipped when determining the latest available version.
-func NewChartSearcher(repos []*repo.Entry, getters getter.Providers, includePrerel bool) *ChartSearcher {
+// local Helm repository cache directory.  When includePrerel is false,
+// pre-release chart versions are skipped when determining the latest available
+// version.  The cacheDir should be settings.RepositoryCache so that the plugin
+// reads the same index files as `helm search repo` (populated by `helm repo
+// update` or `helm upgrade-check --update`).
+func NewChartSearcher(repos []*repo.Entry, cacheDir string, includePrerel bool) *ChartSearcher {
+	if cacheDir == "" {
+		cacheDir = helmpath.CachePath("repository")
+	}
 	return &ChartSearcher{
 		repos:         repos,
-		getters:       getters,
 		idxCache:      make(map[string]*repo.IndexFile),
 		resultMap:     make(map[string]ChartSearchResult),
 		includePrerel: includePrerel,
+		cacheDir:      cacheDir,
 	}
 }
 
@@ -267,10 +273,14 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 			return nil, err
 		}
 		appv := ""
-		if ch.Metadata != nil {
-			appv = ch.Metadata.AppVersion
-			if appv == "" {
-				appv = ch.Metadata.Version
+		if ch != nil {
+			if ca, caErr := chart.NewAccessor(ch); caErr == nil {
+				md := ca.MetadataAsMap()
+				if av, ok := md["AppVersion"].(string); ok && av != "" {
+					appv = av
+				} else if v, ok := md["Version"].(string); ok {
+					appv = v
+				}
 			}
 		}
 		chartName := entry.Name
@@ -279,7 +289,7 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 		}
 		idx := &repo.IndexFile{Entries: map[string]repo.ChartVersions{}}
 		idx.Entries[chartName] = repo.ChartVersions{&repo.ChartVersion{
-			Metadata: &chart.Metadata{
+			Metadata: &chartv2.Metadata{
 				Version:    latest,
 				AppVersion: appv,
 			},
@@ -289,59 +299,15 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 		return idx, nil
 	}
 
-	chartRepo, err := repo.NewChartRepository(entry, s.getters)
-	if err != nil {
-		return nil, err
-	}
-
-	var path string
-	var tryErr error
-	attempts := 3
-	backoff := 500 * time.Millisecond
-	for i := 0; i < attempts; i++ {
-		path, tryErr = chartRepo.DownloadIndexFile()
-		if tryErr == nil {
-			break
-		}
-		if i < attempts-1 {
-			time.Sleep(backoff)
-			backoff *= 2
-		}
-	}
-	if tryErr != nil {
-		return nil, tryErr
-	}
-
+	// Read the locally cached index file — the same file that `helm search repo`
+	// uses and that `helm repo update` (or our --update flag) populates.
+	path := filepath.Join(s.cacheDir, helmpath.CacheIndexFile(entry.Name))
 	idx, err := repo.LoadIndexFile(path)
 	if err != nil {
 		return nil, err
 	}
 	s.idxCache[entry.Name] = idx
 	return idx, nil
-}
-
-// UpdateRepositories iterates over the repositories defined in the provided
-// EnvSettings and downloads their index files, returning an error if any
-// repository fails to update.  It's essentially a programmatic equivalent of
-// `helm repo update`.
-func UpdateRepositories(settings *cli.EnvSettings) error {
-	repoFile := settings.RepositoryConfig
-	repos, err := repo.LoadFile(repoFile)
-	if err != nil {
-		return fmt.Errorf("failed to load repository file: %w", err)
-	}
-
-	getters := getter.All(settings)
-	for _, entry := range repos.Repositories {
-		chartRepo, err := repo.NewChartRepository(entry, getters)
-		if err != nil {
-			return fmt.Errorf("failed to create chart repository for %q: %w", entry.Name, err)
-		}
-		if _, err := chartRepo.DownloadIndexFile(); err != nil {
-			return fmt.Errorf("failed to download index file for %q: %w", entry.Name, err)
-		}
-	}
-	return nil
 }
 
 // PrintUpgradeCommands writes the series of helm commands required to inspect
@@ -353,17 +319,29 @@ func PrintUpgradeCommands(w io.Writer, release, namespace, repos, chartName, ver
 	_, _ = fmt.Fprintf(w, "  helm upgrade --namespace %s %s %s/%s --version %s --values %s.values\n", namespace, release, repos, chartName, version, release)
 }
 
-// convertReleaseList turns the Helm SDK's slice of *release.Release into the
+// convertReleaseList turns the Helm SDK's slice of release.Releaser into the
 // simplified []upgradecheck.Release type used by the rest of the plugin.
-func convertReleaseList(list []*release.Release) []Release {
+func convertReleaseList(list []release.Releaser) []Release {
 	var out []Release
 	for _, rel := range list {
+		ra, err := release.NewAccessor(rel)
+		if err != nil {
+			continue
+		}
+		ca, err := chart.NewAccessor(ra.Chart())
+		if err != nil {
+			continue
+		}
+		md := ca.MetadataAsMap()
+		version, _ := md["Version"].(string)
+		appVersion, _ := md["AppVersion"].(string)
+		chartName := ca.Name()
 		out = append(out, Release{
-			Name:         rel.Name,
-			Namespace:    rel.Namespace,
-			Chart:        rel.Chart.Name() + "-" + rel.Chart.Metadata.Version,
-			ChartVersion: rel.Chart.Metadata.Version,
-			AppVersion:   rel.Chart.Metadata.AppVersion,
+			Name:         ra.Name(),
+			Namespace:    ra.Namespace(),
+			Chart:        chartName + "-" + version,
+			ChartVersion: version,
+			AppVersion:   appVersion,
 		})
 	}
 	return out
@@ -374,11 +352,7 @@ func convertReleaseList(list []*release.Release) []Release {
 // printed to stdout when the debug flag is true.
 func FetchReleases(settings *cli.EnvSettings, debug bool) ([]Release, error) {
 	cfg := new(action.Configuration)
-	cfgGetter := &genericclioptions.ConfigFlags{
-		KubeConfig: &settings.KubeConfig,
-		Context:    &settings.KubeContext,
-	}
-	if err := cfg.Init(cfgGetter, "", os.Getenv("HELM_DRIVER"), nil); err != nil {
+	if err := cfg.Init(settings.RESTClientGetter(), "", os.Getenv("HELM_DRIVER")); err != nil {
 		return nil, fmt.Errorf("failed to initialize Helm config: %w", err)
 	}
 
@@ -397,7 +371,19 @@ func FetchReleases(settings *cli.EnvSettings, debug bool) ([]Release, error) {
 
 	if debug {
 		for _, rel := range releaseList {
-			fmt.Printf("Debug: loaded release %s in namespace %s (chart: %s, app_version: %s)\n", rel.Name, rel.Namespace, rel.Chart.Name()+"-"+rel.Chart.Metadata.Version, rel.Chart.Metadata.AppVersion)
+			ra, err := release.NewAccessor(rel)
+			if err != nil {
+				continue
+			}
+			ca, err := chart.NewAccessor(ra.Chart())
+			if err != nil {
+				continue
+			}
+			md := ca.MetadataAsMap()
+			version, _ := md["Version"].(string)
+			appVersion, _ := md["AppVersion"].(string)
+			chartName := ca.Name()
+			fmt.Printf("Debug: loaded release %s in namespace %s (chart: %s, app_version: %s)\n", ra.Name(), ra.Namespace(), chartName+"-"+version, appVersion)
 		}
 	}
 

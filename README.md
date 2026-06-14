@@ -1,30 +1,22 @@
 # helm-upgrade-check-plugin
 
-A Helm plugin that identifies deployed Helm releases and checks for available updates across configured chart repositories.
+A Helm 4 plugin that identifies deployed Helm releases and checks for available updates across configured chart repositories.
 
 ## Overview
 
 `helm-upgrade-check-plugin` scans your entire Kubernetes cluster for installed Helm releases and compares the deployed chart versions against the latest versions available in your configured repositories. For any releases that have newer versions available, the plugin provides direct copy-paste upgrade commands.
+
+The plugin reads the same locally cached repository indexes that `helm search repo` uses. Run `helm repo update` before invoking the plugin to ensure you are comparing against the latest available versions — exactly the same workflow you would use for any other Helm command.
 
 The plugin is designed for:
 - **Quick vulnerability/security audits** — identify outdated deployments at a glance
 - **Release management** — keep track of which releases need updates
 - **Cluster maintenance** — reduce manual version checking across multiple releases
 
-## Features
+## Requirements
 
-- **Cluster-wide scanning** — detects all releases across all namespaces
-- **Multi-repository support** — checks every configured Helm repository
-- **Smart repository selection** — deduplicates when a chart appears in more than one repo (Bitnami rule, etc.)
-- **Efficient lookups** — cached, on‑demand index downloads; only fetch what’s needed
-- **Parallel index fetches** — repository indexes are downloaded in parallel to improve speed
-- **Retry/backoff** for transient network errors when downloading indexes
-- **OCI registry support** — resolves `oci://` charts by querying tags and fetching manifests
-- **Semantic version comparison** — full semver with prerelease support and fallback ordering
-- **Colored human output** — blue for out‑of‑date, green for current
-- **JSON mode** via `--json`/`-j` for machine‑readable results
-- **Copy‑paste upgrade commands** — ready‑to‑run `helm` commands printed alongside outdated releases
-- **Extensive test coverage** (including OCI path, JSON output, helpers) and easy build/test targets
+- **Helm 4** — the plugin uses the Helm 4 Go SDK and requires a Helm 4 CLI to install and run
+- **Helm repositories configured** — add repos with `helm repo add` and keep them current with `helm repo update`
 
 ## Installation
 
@@ -35,46 +27,45 @@ See [INSTALL.md](INSTALL.md) for installation, upgrade, and uninstall instructio
 ### Basic Usage
 
 ```bash
-helm upgrade-check
+helm repo update          # refresh the local repo cache (same as before helm search repo)
+helm upgrade-check        # check for upgrades using the cached indexes
 ```
-
-Lists all Helm releases in your cluster and shows which ones have updates available.
 
 ### Flags
 
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
-| `--update` | `-u` | Run `helm repo update` before checking chart versions | false |
-| `--debug` | `-d` | Enable debug output showing loaded charts and releases | false |
+| `--include-prerelease` | | Include pre-release chart versions when checking for upgrades | false |
+| `--json` | `-j` | Output results as JSON | false |
+| `--debug` | `-d` | Enable debug output showing loaded releases | false |
+| `--version` | | Print plugin version and exit | |
 
 ### Examples
 
-#### Check all releases without updating repositories
+#### Check all releases
 
 ```bash
 helm upgrade-check
 ```
 
-#### Update repositories before checking
-
-This is useful if your repo indexes may be stale:
+#### Include pre-release versions
 
 ```bash
-helm upgrade-check --update
+helm upgrade-check --include-prerelease
 ```
 
 #### Enable debug output
 
-Shows detailed logs of which charts and releases are being loaded:
+Shows which releases were loaded from the cluster:
 
 ```bash
 helm upgrade-check --debug
 ```
 
-#### Combine flags
+#### Machine-readable JSON output
 
 ```bash
-helm upgrade-check -u -d
+helm upgrade-check --json
 ```
 
 ## Output Format
@@ -82,23 +73,23 @@ helm upgrade-check -u -d
 The plugin outputs a table with the following columns:
 
 ```
-Chart Name      Release Name    Namespace       Chart Ver     Latest Chart  App Ver       Latest App    Repo(s)
-----------      ------------    ---------       ---------     ------------  -------       ----------    -------
+Chart Name      Release Name    Namespace       Repo(s)   Chart Version     App Version
+----------      ------------    ---------       -------   -------------     -----------
 ```
 
 | Column | Description |
 |--------|-------------|
-| **Chart Ver** | The chart version currently installed (used for `--version` in `helm upgrade`) |
-| **Latest Chart** | The latest chart version available in your repositories |
-| **App Ver** | The application version bundled with the installed chart |
-| **Latest App** | The application version bundled with the latest chart release |
+| **Chart Version** | The chart version currently installed (used for `--version` in `helm upgrade`) |
+| **App Version** | The application version bundled with the installed chart |
+
+Up-to-date releases are shown in **green**. Releases with available upgrades show `installed → latest` with the installed version in **red** and the latest in **blue**.
 
 > **Note:** `helm upgrade --version` takes the **chart version**, not the application version. These differ for many charts — for example `ingress-nginx` chart `4.9.1` ships app version `1.9.1`. The plugin always uses the chart version for upgrade commands.
 
 ### Status Indicators
 
-- **Blue text** — out-of-date release: a newer chart version is available **and** its app version does not regress
-- **Green text** — up-to-date release, or a "newer" chart from a different repo ships an older app version
+- `old → new` in red/blue — a newer chart version is available and its app version does not regress
+- **Green text** — up-to-date release, or a "newer" chart ships an older app version (suppressed)
 
 > A higher chart version is only flagged as an upgrade when the candidate chart's app version is equal to or greater than the installed app version. This prevents a chart from a different repository (with its own version numbering) being shown as an update when it would actually downgrade the running application. When app versions are non-semver or absent, the comparison falls back to chart version only.
 
@@ -113,7 +104,13 @@ For each out-of-date release, the plugin prints three commands:
 Example output:
 
 ```
-ingress-nginx   ingress-nginx   ingress    4.9.1         4.10.0        1.9.1         1.10.1        ingress-nginx
+ingress-nginx   ingress-nginx   ingress    ingress-nginx   4.9.1 → 4.10.0   1.9.1 → 1.10.1
+
+
+Upgrade commands:
+─────────────────────────────────────────────────────────────────────────────────────
+
+ingress-nginx (ingress):
   helm get values --namespace ingress ingress-nginx -o yaml > ingress-nginx.values
   cat ingress-nginx.values
   helm upgrade --namespace ingress ingress-nginx ingress-nginx/ingress-nginx --version 4.10.0 --values ingress-nginx.values
@@ -140,7 +137,7 @@ Use `--json` / `-j` for machine-readable output. Each result includes:
 
 ### Error Handling
 
-If a release was installed from a chart that is no longer in any configured repository, the plugin will report it in a separate error section at the end:
+If a release was installed from a chart that is no longer in any configured repository, the plugin reports it in a separate section at the end:
 
 ```
 Unable to find chart information in any repo for the following releases:
@@ -150,12 +147,15 @@ Release          Namespace      Chart
 custom-app       production     my-custom-chart
 ```
 
+This is normal for charts installed directly from a local path or a repo that has since been removed.
+
 ## Configuration
 
 The plugin respects standard Helm configuration:
 
 - **Kubeconfig** — set via `KUBECONFIG` environment variable or `~/.kube/config`
-- **Helm repositories** — configured in `~/.config/helm/repositories.yaml`
+- **Helm repositories** — configured in `~/.config/helm/repositories.yaml` (managed by `helm repo add`)
+- **Repository cache** — the locally cached index files in `$HELM_REPOSITORY_CACHE` (default `~/.cache/helm/repository/`), populated by `helm repo update`
 - **Helm driver** — set via `HELM_DRIVER` environment variable (defaults to secrets)
 
 ### Environment Variables
@@ -164,33 +164,35 @@ The plugin respects standard Helm configuration:
 |----------|---------|
 | `KUBECONFIG` | Path to kubeconfig file for cluster access |
 | `HELM_DRIVER` | Backend driver for Helm (secrets, configmap, memory) |
+| `HELM_REPOSITORY_CACHE` | Directory containing cached repository index files |
+| `HELM_NAMESPACE` | Default namespace (does not restrict which releases are listed) |
 
 ## Architecture
 
 ### Design Philosophy
 
-The plugin balances efficiency with correctness:
+The plugin follows the same model as other Helm commands:
 
-1. **On-demand index loading** — only downloads repository indexes for charts you actually use, not all charts across all repos
-2. **Caching** — caches index downloads to avoid re-fetching for multiple releases of the same chart
-3. **Smart deduplication** — filters out false positives when a chart exists in multiple repositories (e.g., official repo and Bitnami)
-4. **Semantic versioning** — correctly compares versions across repositories to find the true latest
+1. **Reads locally cached indexes** — uses the same `$HELM_REPOSITORY_CACHE/<repo>-index.yaml` files that `helm search repo` reads, populated by `helm repo update`. No network requests are made during the check itself.
+2. **In-memory result caching** — chart version lookups within a single run are memoized so multiple releases of the same chart (e.g. two cilium releases in different namespaces) only parse the index once.
+3. **Smart deduplication** — when a chart exists in multiple repositories (e.g. an official repo and Bitnami), only the non-Bitnami repo is shown in upgrade commands to avoid ambiguity.
+4. **Semantic versioning** — correctly compares versions, including pre-release handling (`--include-prerelease` to opt in).
+5. **OCI registry support** — resolves `oci://` charts by querying tags and fetching manifests directly from the registry.
 
 ### API Integration
 
-The plugin uses Helm's native Go APIs (`helm.sh/helm/v3`), not CLI commands:
+The plugin uses Helm 4's native Go SDK, not CLI commands:
 
-- `helm.sh/helm/v3/pkg/cli` — for Helm configuration and environment
-- `helm.sh/helm/v3/pkg/action` — for interacting with the cluster and getting releases
-- `helm.sh/helm/v3/pkg/repo` — for loading and searching repositories
-
-This provides better performance, error handling, and reliability compared to shelling out to `helm` commands.
+- `helm.sh/helm/v4/pkg/cli` — Helm configuration and environment settings
+- `helm.sh/helm/v4/pkg/action` — interacting with the cluster and listing releases
+- `helm.sh/helm/v4/pkg/repo/v1` — loading locally cached repository indexes
+- `helm.sh/helm/v4/pkg/release` — release accessor for reading installed chart metadata
 
 ## Building from Source
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.25 or later
 - GNU Make
 
 ### Build
@@ -219,7 +221,7 @@ make clean
 make all
 ```
 
-Runs tidy, test, and build in sequence.
+Runs tidy, fmt, vet, test, and build in sequence.
 
 ## Releasing a New Version
 
@@ -235,31 +237,22 @@ before running the release target.
 
 ### Step-by-step
 
-1. **Bump the version** in two places — they must match the tag you will create:
+1. **Prepare the release:**
 
    ```bash
-   # Makefile  — update VERSION=
-   # plugin.yaml — update version:
-   ```
-
-2. **Update `CHANGELOG.md`** with a new entry for the release (follow the
-   Keep a Changelog format already used in the file).
-
-3. **Commit the version bump and changelog:**
-
-   ```bash
-   git add Makefile plugin.yaml CHANGELOG.md
+   make prepare-release TAG=X.Y.Z
+   git add plugin.yaml CHANGELOG.md
    git commit -m "Release vX.Y.Z"
    ```
 
-4. **Create and push the tag** — GoReleaser reads this to determine the version. The tag **must be annotated** (`-a`) — Helm only recognises annotated tags when auto-detecting the latest plugin version; a lightweight tag causes `helm plugin install` (without `--version`) to silently fall back to the previous release:
+2. **Create and push the tag** — the tag **must be annotated** (`-a`):
 
    ```bash
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z
    ```
 
-5. **Run the release:**
+3. **Run the release:**
 
    ```bash
    make release
@@ -267,27 +260,36 @@ before running the release target.
 
    This runs `goreleaser release --clean`, which:
    - Builds binaries for Linux, macOS, and Windows (amd64 + arm64)
-   - Packages each binary into a `tar.gz` archive named `helm-upgrade-check-plugin_<version>_<os>_<arch>.tar.gz`
+   - Packages each into a `tar.gz` archive
    - Generates `checksums.txt`
    - Publishes a GitHub Release with all archives attached
-   - Injects the version into the binary via `-X main.Version`
-
-   > **Note:** `make release` will fail if no tag exists on `HEAD`. Always push
-   > the tag before running it.
 
    After the GitHub Release is published, `helm plugin install` and
    `helm plugin update` will automatically download the correct archive via
-   `scripts/install.sh` — no manual binary copying is required.
+   `scripts/install.sh`.
 
 ## Troubleshooting
 
+### Releases show as up-to-date when upgrades exist
+
+**Cause** — the locally cached repository indexes are stale.
+
+**Solution** — run `helm repo update` to refresh them, then re-run the plugin.
+
+### A release appears in the "Unable to find chart" section
+
+**Cause** — the chart's repository is not configured, or the repository name in the
+cached index does not match the chart name used during installation.
+
+**Solution** — verify the repo is registered (`helm repo list`) and the cache is
+current (`helm repo update`).
+
 ### No output or blank screen
 
-**Cause** — plugin runs successfully but no releases found or all are up-to-date.
+**Cause** — no releases found or all are up-to-date.
 
-**Solution** — This is normal behavior. Run `helm list --all-namespaces` to verify that releases exist in your cluster.
-
-**Solution** — Enable debug output with `-d` flag to see what's happening under the hood.
+**Solution** — run `helm list --all-namespaces` to verify that releases exist in your
+cluster. Enable debug output with `-d` to see what the plugin loaded.
 
 ## License
 
