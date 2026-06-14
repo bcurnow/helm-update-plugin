@@ -1,4 +1,4 @@
-.PHONY: all build test bench clean tidy fmt vet lint check generate install-dev help release version coverage coverage-html
+.PHONY: all build test bench clean tidy fmt vet lint check generate install-dev help release prepare-release version coverage coverage-html _check-plugin-version
 
 BINARY_NAME=helm-upgrade-check
 BIN_DIR=bin
@@ -73,13 +73,27 @@ help:
 	@echo "  tidy          - download and tidy Go module dependencies"
 	@echo "  clean         - remove build artifacts"
 	@echo "  version       - print current version"
-	@echo "  release       - publish a release via goreleaser (tag must exist)"
+	@echo "  prepare-release TAG=X.Y.Z - update plugin.yaml version before tagging"
+	@echo "  release       - publish a release via goreleaser (tag must exist, plugin.yaml must match)"
 	@echo "  help          - show this help message"
 
 version:
 	@echo "$(VERSION)"
 
-release: tidy test
+prepare-release:
+	@test -n "$(TAG)" || (echo "Usage: make prepare-release TAG=X.Y.Z"; exit 1)
+	@sed -i 's/^version:.*/version: "$(TAG)"/' plugin.yaml
+	@echo "Updated plugin.yaml to $(TAG) — commit it, then tag v$(TAG) and run make release"
+
+_check-plugin-version:
+	@PLUGIN_VER=$$(grep '^version:' plugin.yaml | sed 's/version: *"\(.*\)"/\1/'); \
+	if [ "$$PLUGIN_VER" != "$(VERSION)" ]; then \
+		echo "Error: plugin.yaml version ($$PLUGIN_VER) does not match release tag ($(VERSION))"; \
+		echo "Run: make prepare-release TAG=$(VERSION)  then commit and re-tag"; \
+		exit 1; \
+	fi
+
+release: tidy test _check-plugin-version
 	@command -v goreleaser >/dev/null 2>&1 || (echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; exit 1)
 	@echo "Building release $(VERSION) with goreleaser..."
 	goreleaser release --clean
