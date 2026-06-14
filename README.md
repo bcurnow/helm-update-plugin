@@ -89,9 +89,27 @@ Up-to-date releases are shown in **green**. Releases with available upgrades sho
 ### Status Indicators
 
 - `old → new` in red/blue — a newer chart version is available and its app version does not regress
-- **Green text** — up-to-date release, or a "newer" chart ships an older app version (suppressed)
+- **Green text** — up-to-date: no newer version found, or the only "newer" chart ships an older app version (suppressed)
 
-> A higher chart version is only flagged as an upgrade when the candidate chart's app version is equal to or greater than the installed app version. This prevents a chart from a different repository (with its own version numbering) being shown as an update when it would actually downgrade the running application. When app versions are non-semver or absent, the comparison falls back to chart version only.
+### Version Selection and Upgrade Suppression
+
+For each repo that contains the chart, the plugin selects the **highest stable chart version** in the cached index. It then flags an upgrade only when both conditions hold:
+
+1. The candidate chart version is **greater than** the installed chart version (semver comparison)
+2. The candidate chart's app version is **not older than** the installed app version
+
+If condition 2 fails — the highest available chart version ships an older application version than what is currently running — the upgrade is **suppressed** and the release appears green (up-to-date). This prevents a chart from a different repository branch or numbering scheme being shown as an update when it would actually downgrade the running application. When app versions are non-semver or absent, the comparison falls back to chart version only.
+
+> **Important:** the plugin picks the *highest* chart version from each repo and tests it against the app-regression guard. It does not search backward through lower chart versions looking for a non-regressing upgrade. If your highest available chart version ships an older app, the release will show as up-to-date even if an intermediate chart version exists that would be a valid upgrade. This is expected and correct for well-maintained repositories where chart and app versions advance together.
+
+### Bitnami Repository Handling
+
+Bitnami mirrors many upstream charts under its own **independent version numbering** that is incompatible with upstream chart versions. For example, `bitnami/cilium` may be versioned `3.1.9` while the upstream `cilium/cilium` is at `1.19.4`. Comparing these version numbers directly would produce incorrect results — Bitnami `3.1.9 > 1.19.4` numerically, but the Bitnami chart ships an older application version than the upstream chart.
+
+The plugin handles this by excluding Bitnami from version selection whenever the chart is also present in at least one non-Bitnami repository:
+
+- If the chart exists in **both Bitnami and a non-Bitnami repo** — Bitnami's version and app version are excluded from the comparison entirely. Only the non-Bitnami repo's version is used to determine whether an upgrade is available. The upgrade command will reference the non-Bitnami repo.
+- If the chart exists **only in Bitnami** — Bitnami's version is used normally as the sole available source.
 
 ### Upgrade Commands
 
@@ -175,7 +193,7 @@ The plugin follows the same model as other Helm commands:
 
 1. **Reads locally cached indexes** — uses the same `$HELM_REPOSITORY_CACHE/<repo>-index.yaml` files that `helm search repo` reads, populated by `helm repo update`. No network requests are made during the check itself.
 2. **In-memory result caching** — chart version lookups within a single run are memoized so multiple releases of the same chart (e.g. two cilium releases in different namespaces) only parse the index once.
-3. **Smart deduplication** — when a chart exists in multiple repositories (e.g. an official repo and Bitnami), only the non-Bitnami repo is shown in upgrade commands to avoid ambiguity.
+3. **Bitnami exclusion** — when a chart exists in both a non-Bitnami repo and Bitnami, Bitnami is excluded from version selection entirely. Bitnami maintains its own version numbering that is incompatible with upstream chart versions; mixing the two produces incorrect comparisons. Bitnami is used as a fallback only when it is the sole source for a chart.
 4. **Semantic versioning** — correctly compares versions, including pre-release handling (`--include-prerelease` to opt in).
 5. **OCI registry support** — resolves `oci://` charts by querying tags and fetching manifests directly from the registry.
 
