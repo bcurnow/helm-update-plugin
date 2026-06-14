@@ -96,7 +96,7 @@ func TestChartSearcher_Search(t *testing.T) {
 		{Name: "r1"},
 		{Name: "bitnami"},
 	}
-	searcher := NewChartSearcher(repos, nil)
+	searcher := NewChartSearcher(repos, nil, false)
 
 	// r1 has chart version 1.0.0 / app version 7.0.0
 	// Version is set via Metadata (repo.ChartVersion embeds *chart.Metadata).
@@ -128,7 +128,7 @@ func TestChartSearcher_Search(t *testing.T) {
 
 func TestChartSearcher_NoChart(t *testing.T) {
 	repos := []*repo.Entry{{Name: "empty"}}
-	s := NewChartSearcher(repos, nil)
+	s := NewChartSearcher(repos, nil, false)
 	r := s.Search("nonexistent")
 	assert.Empty(t, r.Repos)
 	assert.Equal(t, "", r.Version)
@@ -174,7 +174,7 @@ func TestOCIRepositoryLookup(t *testing.T) {
 	defer func() { registryClientFactory = origFactory }()
 
 	repoEntry := &repo.Entry{Name: "ociRepo", URL: "oci://example.com/charts/mychart"}
-	s := NewChartSearcher([]*repo.Entry{repoEntry}, nil)
+	s := NewChartSearcher([]*repo.Entry{repoEntry}, nil, false)
 
 	res := s.Search("mychart")
 	// Version is the chart version (OCI tag "1.0.0"), not the app version.
@@ -276,7 +276,7 @@ entries:
 	defer h.Close()
 
 	repoEntry := &repo.Entry{Name: "local", URL: h.URL}
-	searcher := NewChartSearcher([]*repo.Entry{repoEntry}, getter.All(cli.New()))
+	searcher := NewChartSearcher([]*repo.Entry{repoEntry}, getter.All(cli.New()), false)
 
 	idx, err := searcher.loadIndex(repoEntry)
 	assert.NoError(t, err)
@@ -289,6 +289,44 @@ entries:
 	idx2, err := searcher.loadIndex(repoEntry)
 	assert.NoError(t, err)
 	assert.Equal(t, idx, idx2)
+}
+
+func TestChartSearcher_PrerelFiltering_StableReturned(t *testing.T) {
+	// The root cause of the cilium bug: versions[0] is a pre-release (rc/alpha),
+	// but a stable version exists behind it.  With includePrerel=false the
+	// searcher must skip the pre-release and return the latest stable.
+	repos := []*repo.Entry{{Name: "cilium"}}
+	s := NewChartSearcher(repos, nil, false)
+	s.idxCache["cilium"] = &repo.IndexFile{
+		Entries: map[string]repo.ChartVersions{
+			"cilium": {
+				{Metadata: &chart.Metadata{Version: "1.20.0-rc.1", AppVersion: "1.20.0-rc.1"}},
+				{Metadata: &chart.Metadata{Version: "1.19.4", AppVersion: "1.19.4"}},
+				{Metadata: &chart.Metadata{Version: "1.19.1", AppVersion: "1.19.1"}},
+			},
+		},
+	}
+	res := s.Search("cilium")
+	assert.Equal(t, "1.19.4", res.Version)
+	assert.Equal(t, "1.19.4", res.AppVersion)
+	assert.Equal(t, []string{"cilium"}, res.Repos)
+}
+
+func TestChartSearcher_PrerelFiltering_PrerelReturnedWhenEnabled(t *testing.T) {
+	// With includePrerel=true the pre-release at the top of the index wins.
+	repos := []*repo.Entry{{Name: "cilium"}}
+	s := NewChartSearcher(repos, nil, true)
+	s.idxCache["cilium"] = &repo.IndexFile{
+		Entries: map[string]repo.ChartVersions{
+			"cilium": {
+				{Metadata: &chart.Metadata{Version: "1.20.0-rc.1", AppVersion: "1.20.0-rc.1"}},
+				{Metadata: &chart.Metadata{Version: "1.19.4", AppVersion: "1.19.4"}},
+			},
+		},
+	}
+	res := s.Search("cilium")
+	assert.Equal(t, "1.20.0-rc.1", res.Version)
+	assert.Equal(t, "1.20.0-rc.1", res.AppVersion)
 }
 
 func TestFetchReleases_Error(t *testing.T) {

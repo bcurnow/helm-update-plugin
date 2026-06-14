@@ -99,20 +99,23 @@ type ChartSearchResult struct {
 // the latest version of a chart.  Results and index files are cached to avoid
 // repeated network requests when scanning many releases.
 type ChartSearcher struct {
-	repos     []*repo.Entry
-	getters   getter.Providers
-	idxCache  map[string]*repo.IndexFile
-	resultMap map[string]ChartSearchResult
+	repos         []*repo.Entry
+	getters       getter.Providers
+	idxCache      map[string]*repo.IndexFile
+	resultMap     map[string]ChartSearchResult
+	includePrerel bool
 }
 
 // NewChartSearcher constructs a searcher using the provided repositories and
-// HTTP getter providers.
-func NewChartSearcher(repos []*repo.Entry, getters getter.Providers) *ChartSearcher {
+// HTTP getter providers.  When includePrerel is false, pre-release chart
+// versions are skipped when determining the latest available version.
+func NewChartSearcher(repos []*repo.Entry, getters getter.Providers, includePrerel bool) *ChartSearcher {
 	return &ChartSearcher{
-		repos:     repos,
-		getters:   getters,
-		idxCache:  make(map[string]*repo.IndexFile),
-		resultMap: make(map[string]ChartSearchResult),
+		repos:         repos,
+		getters:       getters,
+		idxCache:      make(map[string]*repo.IndexFile),
+		resultMap:     make(map[string]ChartSearchResult),
+		includePrerel: includePrerel,
 	}
 }
 
@@ -154,13 +157,28 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 			if err != nil {
 				return
 			}
-			if versions, ok := idx.Entries[chartName]; ok && len(versions) > 0 {
-				cv := versions[0].Version
-				av := ""
-				if versions[0].Metadata != nil {
-					av = versions[0].AppVersion
+			if versions, ok := idx.Entries[chartName]; ok {
+				// Helm indexes sort entries newest-first, so iterate until we
+				// find the first version that satisfies the pre-release policy.
+				var cv, av string
+				for _, v := range versions {
+					if v.Metadata == nil {
+						continue
+					}
+					sv, err := semver.NewVersion(strings.TrimPrefix(v.Version, "v"))
+					if err != nil {
+						continue
+					}
+					if !s.includePrerel && sv.Prerelease() != "" {
+						continue
+					}
+					cv = v.Version
+					av = v.AppVersion
+					break
 				}
-				ch <- result{repo: entry.Name, version: cv, appVersion: av}
+				if cv != "" {
+					ch <- result{repo: entry.Name, version: cv, appVersion: av}
+				}
 			}
 		}()
 	}
@@ -174,7 +192,7 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 	var latestChartVer, latestAppVer string
 	for r := range ch {
 		uniq[r.repo] = struct{}{}
-		if latestChartVer == "" || CompareVersions(r.version, latestChartVer, true) {
+		if latestChartVer == "" || CompareVersions(r.version, latestChartVer, s.includePrerel) {
 			latestChartVer = r.version
 			latestAppVer = r.appVersion
 		}
