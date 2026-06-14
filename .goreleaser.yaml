@@ -2,12 +2,11 @@ version: 2
 
 project_name: helm-upgrade-check-plugin
 
-release:
-  github:
-    owner: bcurnow
-    name: helm-upgrade-check-plugin
-  draft: false
-  prerelease: "false"
+before:
+  hooks:
+    - go mod tidy
+    # Ensure Helm is present in the build environment to generate signatures later
+    - helm version --short
 
 builds:
   - id: helm-upgrade-check-plugin
@@ -29,6 +28,24 @@ builds:
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - INSTALL.md
+      - plugin.yaml
+      - scripts/**/*
+publishers:
+  - name: helm-provenance-generator
+    ids:
+      - helm-plugin-archive
+    cmd: |
+      mkdir -p temp_sign
+      tar -xzf {{ abs .ArtifactPath }} -C temp_sign
+      helm plugin package --sign --key "${GPG_KEY_NAME}" ./temp_sign/*
+      mv *.tgz "{{ abs .ArtifactDir }}/upgrade-check-{{ .Version }}.tgz"
+      mv *.tgz.prov "{{ abs .ArtifactDir }}/upgrade-check-{{ .Version }}.tgz.prov"
+      rm -rf temp_sign      
 
 checksum:
   name_template: 'checksums.txt'
@@ -45,3 +62,13 @@ changelog:
 
 env_files:
   github_token: ~/.config/goreleaser/helm-upgrade-check-plugin-github-token
+
+release:
+  github:
+    owner: bcurnow
+    name: helm-upgrade-check-plugin
+  draft: false
+  prerelease: "false"
+  extra_files:
+    - glob: './dist/*.tgz.prov'
+    - glob: './dist/*.tgz'
