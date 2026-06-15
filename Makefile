@@ -110,7 +110,7 @@ _release-credentials:
 	chmod 600 $(SECURE_PASS_FILE); \
 	gpg --batch --pinentry-mode loopback --passphrase-file $(SECURE_PASS_FILE) --dry-run --passwd "$(GPG_KEY_NAME)" > /dev/null 2>&1 || { echo "Error: Invalid GPG passphrase or key. Aborting."; rm -f $(SECURE_PASS_FILE); exit 1; }
 
-release: tidy test _check-plugin-version _release-credentials	\
+release: tidy test _check-plugin-version _release-credentials
 	@echo "Using GPG Key Name: $(GPG_KEY_NA	@command -v goreleaser >/dev/null 2>&1 || (echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; exit 1)
 	@echo "Building release $(VERSION) with goreleaser..."
 	(goreleaser release --clean; STATUS=$$?; rm -f $(SECURE_PASS_FILE); echo "Secure cleanup complete."; exit $$STATUS)
