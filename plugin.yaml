@@ -8,7 +8,6 @@ config:
   shortHelp: "check for available upgrades to installed Helm releases"
   longHelp: "Identifies Helm releases deployed to the cluster and reports which have newer versions available in configured repositories. Provides upgrade commands for out-of-date releases."
   ignoreFlags: false
-command: "$HELM_PLUGIN_DIR/bin/helm-upgrade-check"
 runtimeConfig:
   platformCommand:
     - command: "$HELM_PLUGIN_DIR/bin/helm-upgrade-check"
