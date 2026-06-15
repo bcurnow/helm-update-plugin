@@ -46,7 +46,7 @@ archives:
       - CHANGELOG.md
       - INSTALL.md
       - plugin.yaml
-      - scripts/**/*
+      - scripts/*
 
 checksum:
   name_template: 'checksums.txt'
