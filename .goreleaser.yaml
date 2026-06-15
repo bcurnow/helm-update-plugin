@@ -2,11 +2,15 @@ version: 2
 
 project_name: helm-upgrade-check-plugin
 
+env_files:
+  github_token: ~/.config/goreleaser/helm-upgrade-check-plugin-github-token
+
 before:
   hooks:
     - go mod tidy
     # Ensure Helm is present in the build environment to generate signatures later
     - helm version --short
+    - ./build-scripts/check-gpg-keyring.sh
 
 builds:
   - id: helm-upgrade-check-plugin
@@ -24,7 +28,15 @@ builds:
     ldflags:
       - -s -w -X main.Version={{.Version}}
     mod_timestamp: '{{ .CommitTimestamp }}'
-
+    hooks:
+      post:
+        - cmd: ./build-scripts/package-plugin.sh
+          env:
+            - GORELEASER_TARGET={{ .Target }}
+            - GORELEASER_BINARY_PATH={{ .Path }}
+            - GORELEASER_VERSION={{ .Version }}
+            - GPG_KEY_NAME={{ .Env.GPG_KEY_NAME }}
+            - PASSPHRASE_FILE={{ .Env.SECURE_PASS_FILE }}
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -35,17 +47,6 @@ archives:
       - INSTALL.md
       - plugin.yaml
       - scripts/**/*
-publishers:
-  - name: helm-provenance-generator
-    ids:
-      - helm-plugin-archive
-    cmd: |
-      mkdir -p temp_sign
-      tar -xzf {{ abs .ArtifactPath }} -C temp_sign
-      helm plugin package --sign --key "${GPG_KEY_NAME}" ./temp_sign/*
-      mv *.tgz "{{ abs .ArtifactDir }}/upgrade-check-{{ .Version }}.tgz"
-      mv *.tgz.prov "{{ abs .ArtifactDir }}/upgrade-check-{{ .Version }}.tgz.prov"
-      rm -rf temp_sign      
 
 checksum:
   name_template: 'checksums.txt'
@@ -59,9 +60,6 @@ changelog:
       - '^test:'
       - Merge pull request
       - Merge branch
-
-env_files:
-  github_token: ~/.config/goreleaser/helm-upgrade-check-plugin-github-token
 
 release:
   github:
