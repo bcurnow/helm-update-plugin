@@ -4,7 +4,7 @@ type: cli/v1
 version: "2.0.0"
 runtime: subprocess
 config:
-  usage: "check for available upgrades to installed Helm releases"
+  usage: upgrade-check
   shortHelp: "check for available upgrades to installed Helm releases"
   longHelp: "Identifies Helm releases deployed to the cluster and reports which have newer versions available in configured repositories. Provides upgrade commands for out-of-date releases."
   ignoreFlags: false
