@@ -4,9 +4,8 @@
 
 Before installing `helm-upgrade-check-plugin`, ensure you have:
 
-- **Helm 3.1.0 or later** — [Install Helm](https://helm.sh/docs/intro/install/)
+- **Helm 4** — [Install Helm](https://helm.sh/docs/intro/install/)
 - **kubectl** — configured to access your Kubernetes cluster
-- **Git** (optional, for installing from source)
 
 Verify your Helm installation:
 
@@ -14,143 +13,63 @@ Verify your Helm installation:
 helm version
 ```
 
-## Installation Methods
+## Installation
 
-### Method 1: Install from GitHub (Recommended)
-
-Install the latest version directly from the GitHub repository:
+Each release publishes signed plugin archives to the [GitHub Releases page](https://github.com/bcurnow/helm-upgrade-check-plugin/releases). Download the `.tgz` for your platform and install it directly:
 
 ```bash
-helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin.git --verify=false
+helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-vX.Y.Z-<OS>_<ARCH>.tgz
 ```
 
-> **Note:** `--verify=false` is required because Helm 4 defaults to verifying plugin sources via GPG signature, but git-based sources do not support this mechanism. The downloaded binary is still verified against its SHA256 checksum by the install script.
+Replace `X.Y.Z` with the release version and `<OS>_<ARCH>` with the combination matching your system:
 
-### Method 2: Install from Local Source
+| Platform | Archive suffix |
+|----------|---------------|
+| Linux, 64-bit Intel | `linux_amd64_v1` |
+| Linux, 64-bit ARM | `linux_arm64` |
+| macOS, Intel | `darwin_amd64_v1` |
+| macOS, Apple Silicon | `darwin_arm64` |
+| Windows, 64-bit Intel | `windows_amd64_v1` |
+| Windows, 64-bit ARM | `windows_arm64` |
 
-Clone the repository and install locally:
+### GPG Signature Verification (optional)
 
-```bash
-git clone https://github.com/bcurnow/helm-upgrade-check-plugin.git
-cd helm-upgrade-check-plugin
-make build
-helm plugin install .
-```
-
-### Method 3: Manual Installation
-
-1. Download or build the binary:
+Each archive is accompanied by a `.tgz.prov` provenance file signed with GPG. If you have the signing key in your keyring, pass `--verify` to validate the signature before installation:
 
 ```bash
-# Build from source
-git clone https://github.com/bcurnow/helm-upgrade-check-plugin.git
-cd helm-upgrade-check-plugin
-make build
-```
-
-2. Find your Helm plugin directory:
-
-```bash
-echo $(helm env HELM_PLUGINS)
-```
-
-3. Create the plugin directory structure:
-
-```bash
-mkdir -p $(helm env HELM_PLUGINS)/upgrade-check/bin
-```
-
-4. Copy the binary:
-
-```bash
-cp bin/helm-upgrade-check $(helm env HELM_PLUGINS)/upgrade-check/bin/
-chmod +x $(helm env HELM_PLUGINS)/upgrade-check/bin/helm-upgrade-check
-```
-
-5. Copy the plugin manifest:
-
-```bash
-cp plugin.yaml $(helm env HELM_PLUGINS)/upgrade-check/
+helm plugin install --verify https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-vX.Y.Z-<OS>_<ARCH>.tgz
 ```
 
 ## Verification
 
-Verify the plugin is installed correctly:
+Confirm the plugin installed correctly:
 
 ```bash
 helm plugin list
 ```
 
-You should see `upgrade-check` in the list. Test the plugin:
+You should see `upgrade-check` in the list. Test it:
 
 ```bash
-helm upgrade-check
-```
-
-## Uninstallation
-
-To remove the plugin:
-
-```bash
-helm plugin uninstall upgrade-check
+helm upgrade-check --version
 ```
 
 ## Upgrading
 
-### From Git Installation
-
-If you installed from GitHub, pull the latest version and reinstall:
+Uninstall the current version and install the new release:
 
 ```bash
 helm plugin uninstall upgrade-check
-helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin.git --verify=false
+helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-vX.Y.Z-<OS>_<ARCH>.tgz
 ```
 
-### From Local Installation
-
-Rebuild and reinstall:
+## Uninstallation
 
 ```bash
-cd helm-upgrade-check-plugin
-git pull
-make clean build
 helm plugin uninstall upgrade-check
-helm plugin install .
 ```
 
-## Configuration
-
-### Kubeconfig
-
-The plugin uses your default kubeconfig. Set a custom kubeconfig:
-
-```bash
-export KUBECONFIG=/path/to/kubeconfig
-helm upgrade-check
-```
-
-Or use it inline:
-
-```bash
-KUBECONFIG=/path/to/kubeconfig helm upgrade-check
-```
-
-### Helm Repositories
-
-The plugin accesses all repositories configured in your `repositories.yaml`. View configured repositories:
-
-```bash
-helm repo list
-```
-
-Add a new repository:
-
-```bash
-helm repo add myrepo https://example.com/charts
-helm repo update
-```
-
-## Troubleshooting Installation
+## Troubleshooting
 
 ### Plugin not found
 
@@ -199,57 +118,13 @@ helm repo update
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| Go (for building) | 1.19 | 1.21+ |
-| Helm | 3.1.0 | 3.13.0+ |
+| Helm | 4.0.0 | latest |
 | Kubernetes | 1.16 | 1.25+ |
 | Memory | 50 MB | 200 MB |
 | Network | For repo access | Broadband |
-
-## Building from Source
-
-### Requirements
-
-- Go 1.21 or later
-- Make
-- Git
-
-### Build Steps
-
-```bash
-# Clone repository
-git clone https://github.com/bcurnow/helm-upgrade-check-plugin.git
-cd helm-upgrade-check-plugin
-
-# Install dependencies
-make tidy
-
-# Run tests
-make test
-
-# Build
-make build
-
-# Binary is in bin/helm-upgrade-check
-./bin/helm-upgrade-check --help
-```
-
-### Cross-Compilation
-
-Build for different platforms:
-
-```bash
-# macOS
-GOOS=darwin GOARCH=amd64 make build
-
-# Linux
-GOOS=linux GOARCH=amd64 make build
-
-# Windows
-GOOS=windows GOARCH=amd64 make build
-```
 
 ## Getting Help
 
 - [GitHub Issues](https://github.com/bcurnow/helm-upgrade-check-plugin/issues) — Report bugs or request features
 - [GitHub Discussions](https://github.com/bcurnow/helm-upgrade-check-plugin/discussions) — Ask questions and discuss
-- Check existing [documentation](README.md)
+- [DEV.md](DEV.md) — Building and releasing from source

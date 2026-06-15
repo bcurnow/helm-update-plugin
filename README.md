@@ -206,86 +206,6 @@ The plugin uses Helm 4's native Go SDK, not CLI commands:
 - `helm.sh/helm/v4/pkg/repo/v1` — loading locally cached repository indexes
 - `helm.sh/helm/v4/pkg/release` — release accessor for reading installed chart metadata
 
-## Building from Source
-
-### Prerequisites
-
-- Go 1.25 or later
-- GNU Make
-
-### Build
-
-```bash
-make build
-```
-
-Outputs the binary to `bin/helm-upgrade-check`.
-
-### Run Tests
-
-```bash
-make test
-```
-
-### Clean Build Artifacts
-
-```bash
-make clean
-```
-
-### Full Build Process
-
-```bash
-make all
-```
-
-Runs tidy, fmt, vet, test, and build in sequence.
-
-## Releasing a New Version
-
-Releases are published to GitHub via [GoReleaser](https://goreleaser.com). GoReleaser
-determines the version from the **git tag**, so the tag must be created and pushed
-before running the release target.
-
-### Prerequisites
-
-- [GoReleaser](https://goreleaser.com/install/) installed and on your `$PATH`
-- A GitHub personal access token with `repo` scope saved to
-  `~/.config/goreleaser/helm-upgrade-check-plugin-github-token`
-
-### Step-by-step
-
-1. **Prepare the release:**
-
-   ```bash
-   make prepare-release TAG=X.Y.Z
-   git add plugin.yaml CHANGELOG.md
-   git commit -m "Release vX.Y.Z"
-   ```
-
-2. **Create and push the tag** — the tag **must be annotated** (`-a`):
-
-   ```bash
-   git tag -a vX.Y.Z -m "vX.Y.Z"
-   git push origin vX.Y.Z
-   ```
-
-3. **Run the release:**
-
-   ```bash
-   make release
-   ```
-
-   This runs `goreleaser release --clean`, which:
-   - Builds binaries for Linux, macOS, and Windows (amd64 + arm64)
-   - Packages each into a `tar.gz` archive
-   - Generates `checksums.txt`
-   - Publishes a GitHub Release with all archives attached
-
-   After the GitHub Release is published, `helm plugin install` and
-   `helm plugin update` will automatically download the correct archive via
-   `scripts/install.sh`.
-
 ## Troubleshooting
 
 ### Releases show as up-to-date when upgrades exist
@@ -308,6 +228,10 @@ current (`helm repo update`).
 
 **Solution** — run `helm list --all-namespaces` to verify that releases exist in your
 cluster. Enable debug output with `-d` to see what the plugin loaded.
+
+## Contributing / Development
+
+See [DEV.md](DEV.md) for build instructions, local development setup, and release procedures.
 
 ## License
 
