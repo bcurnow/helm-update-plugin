@@ -10,9 +10,15 @@ config:
   ignoreFlags: false
 runtimeConfig:
   platformCommand:
-    - command: "$HELM_PLUGIN_DIR/bin/helm-upgrade-check"
+    - os: default
+      arch: default
+      command: "$HELM_PLUGIN_DIR/bin/helm-upgrade-check"
   platformHooks:
     install:
-      - command: "$HELM_PLUGIN_DIR/scripts/install.sh"
+      - os: default
+        arch: default
+        command: "$HELM_PLUGIN_DIR/scripts/install.sh"
     update:
-      - command: "$HELM_PLUGIN_DIR/scripts/install.sh"
+      - os: default
+        arch: default
+        command: "$HELM_PLUGIN_DIR/scripts/install.sh"
