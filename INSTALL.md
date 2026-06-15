@@ -15,29 +15,20 @@ helm version
 
 ## Installation
 
-Each release publishes signed plugin archives to the [GitHub Releases page](https://github.com/bcurnow/helm-upgrade-check-plugin/releases). Download the `.tgz` for your platform and install it directly:
+Each release publishes a signed plugin archive to the [GitHub Releases page](https://github.com/bcurnow/helm-upgrade-check-plugin/releases). Replace `X.Y.Z` with the version you want to install:
 
 ```bash
-helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-vX.Y.Z-<OS>_<ARCH>.tgz
+helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-X.Y.Z.tgz
 ```
 
-Replace `X.Y.Z` with the release version and `<OS>_<ARCH>` with the combination matching your system:
-
-| Platform | Archive suffix |
-|----------|---------------|
-| Linux, 64-bit Intel | `linux_amd64_v1` |
-| Linux, 64-bit ARM | `linux_arm64` |
-| macOS, Intel | `darwin_amd64_v1` |
-| macOS, Apple Silicon | `darwin_arm64` |
-| Windows, 64-bit Intel | `windows_amd64_v1` |
-| Windows, 64-bit ARM | `windows_arm64` |
+The archive works on all supported platforms — the included install script downloads the correct binary for your OS and architecture automatically.
 
 ### GPG Signature Verification (optional)
 
 Each archive is accompanied by a `.tgz.prov` provenance file signed with GPG. If you have the signing key in your keyring, pass `--verify` to validate the signature before installation:
 
 ```bash
-helm plugin install --verify https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-vX.Y.Z-<OS>_<ARCH>.tgz
+helm plugin install --verify https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-X.Y.Z.tgz
 ```
 
 ## Verification
@@ -60,7 +51,7 @@ Uninstall the current version and install the new release:
 
 ```bash
 helm plugin uninstall upgrade-check
-helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-vX.Y.Z-<OS>_<ARCH>.tgz
+helm plugin install https://github.com/bcurnow/helm-upgrade-check-plugin/releases/download/vX.Y.Z/upgrade-check-X.Y.Z.tgz
 ```
 
 ## Uninstallation
