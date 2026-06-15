@@ -1,3 +1,4 @@
 bin/
 coverage.out
 dist/
+.helm-gpg-pass
