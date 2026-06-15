@@ -31,18 +31,15 @@ builds:
       post:
         - cmd: ./build-scripts/package-plugin.sh
           env:
-            - GORELEASER_TARGET={{ .Target }}
-            - GORELEASER_BINARY_PATH={{ .Path }}
-            - GORELEASER_VERSION={{ .Version }}
             - GPG_KEY_NAME={{ .Env.GPG_KEY_NAME }}
             - PASSPHRASE_FILE={{ .Env.SECURE_PASS_FILE }}
 archives:
-  - id: default
-    formats:
-      - binary
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
-  disable: true
+  name_template: 'checksums.txt'
+  algorithm: sha256
 
 changelog:
   sort: asc
@@ -59,8 +56,6 @@ release:
     name: helm-upgrade-check-plugin
   draft: false
   prerelease: "false"
-  ids:
-    - custom-archives
   extra_files:
     - glob: './dist/*.tgz.prov'
     - glob: './dist/*.tgz'
