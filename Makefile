@@ -1,5 +1,8 @@
-.PHONY: all build test bench clean tidy fmt vet lint check generate install-dev help release prepare-release version coverage coverage-html _check-plugin-version test-release
+SHELL := /bin/bash
 
+.PHONY: all build test bench clean tidy fmt vet lint check generate install-dev help release prepare-release version coverage coverage-html _check-plugin-version test-release _release-credentials
+
+export SECURE_PASS_FILE := $(CURDIR)/.helm-gpg-pass
 BINARY_NAME=helm-upgrade-check
 BIN_DIR=bin
 CMD_DIR=cmd/$(BINARY_NAME)
@@ -94,20 +97,26 @@ _check-plugin-version:
 		exit 1; \
 	fi
 
-release: tidy test _check-plugin-version
+_release-credentials:
 	@if [ -z "$(GPG_KEY_NAME)" ]; then \
 		echo "Error: No local GPG key found. Run 'gpg --generate-key' first."; \
 		exit 1; \
 	fi
+	@echo "Initializing secure release pipeline..."
+	@read -sp "Enter GPG Passphrase for $(GPG_KEY_NAME): " PASSPHRASE; \
+	echo ""; \
+	\
+	echo "$$PASSPHRASE" > $(SECURE_PASS_FILE); \
+	chmod 600 $(SECURE_PASS_FILE); \
+	gpg --batch --pinentry-mode loopback --passphrase-file $(SECURE_PASS_FILE) --dry-run --passwd "$(GPG_KEY_NAME)" > /dev/null 2>&1 || { echo "Error: Invalid GPG passphrase or key. Aborting."; rm -f $(SECURE_PASS_FILE); exit 1; }
+
+release: tidy test _check-plugin-version _release-credentials	\
+	trap 'rm -f $(SECURE_PASS_FILE); echo "Secure cleanup complete."' EXIT INT TERM; \
 	@echo "Using GPG Key Name: $(GPG_KEY_NA	@command -v goreleaser >/dev/null 2>&1 || (echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; exit 1)
 	@echo "Building release $(VERSION) with goreleaser..."
-	goreleaser release --clean
+	(goreleaser release --clean; STATUS=$$?; rm -f $(SECURE_PASS_FILE); echo "Secure cleanup complete."; exit $$STATUS)
 
-test-release:
-	@if [ -z "$(GPG_KEY_NAME)" ]; then \
-		echo "Error: No local GPG key found. Run 'gpg --generate-key' first."; \
-		exit 1; \
-	fi
+test-release: _release-credentials
 	@echo "Using GPG Key Name: $(GPG_KEY_NAME)"
 	# Run goreleaser locally in snapshot mode, cleaning up old artifacts first
-	goreleaser release --skip=publish --clean
+	(goreleaser release --snapshot --clean; STATUS=$$?; rm -f $(SECURE_PASS_FILE); echo "Secure cleanup complete."; exit $$STATUS)
