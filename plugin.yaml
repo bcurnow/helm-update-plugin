@@ -13,6 +13,6 @@ runtimeConfig:
     - command: "$HELM_PLUGIN_DIR/bin/helm-upgrade-check"
   platformHooks:
     install:
-     - command: "$HELM_PLUGIN_DIR/scripts/install.sh"
+      - command: "$HELM_PLUGIN_DIR/scripts/install.sh"
     update:
-     - command: "$HELM_PLUGIN_DIR/scripts/install.sh"
+      - command: "$HELM_PLUGIN_DIR/scripts/install.sh"
