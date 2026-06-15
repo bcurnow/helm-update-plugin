@@ -8,7 +8,6 @@ env_files:
 before:
   hooks:
     - go mod tidy
-    # Ensure Helm is present in the build environment to generate signatures later
     - helm version --short
     - ./build-scripts/check-gpg-keyring.sh
 
@@ -38,19 +37,12 @@ builds:
             - GPG_KEY_NAME={{ .Env.GPG_KEY_NAME }}
             - PASSPHRASE_FILE={{ .Env.SECURE_PASS_FILE }}
 archives:
-  - formats: [tar.gz]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    files:
-      - LICENSE
-      - README.md
-      - CHANGELOG.md
-      - INSTALL.md
-      - plugin.yaml
-      - scripts/*
+  - id: default
+    formats:
+      - binary
 
 checksum:
-  name_template: 'checksums.txt'
-  algorithm: sha256
+  disable: true
 
 changelog:
   sort: asc
@@ -67,6 +59,8 @@ release:
     name: helm-upgrade-check-plugin
   draft: false
   prerelease: "false"
+  ids:
+    - custom-archives
   extra_files:
     - glob: './dist/*.tgz.prov'
     - glob: './dist/*.tgz'
