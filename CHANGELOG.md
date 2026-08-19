@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-19
+
 ### Fixed
 
 - **Data race in concurrent repository index loading** — `ChartSearcher.loadIndex` is called from one goroutine per repo, but the `idxCache` map it read from and wrote to had no synchronization. Go maps are not safe for concurrent access even across distinct keys, so this could corrupt results whenever a chart existed in multiple repos — e.g. `grafana` and `grafana-community` both reporting the same (wrong) chart/app version instead of their own. `idxCache` is now guarded by a mutex. Confirmed with `go test -race` before and after the fix.
