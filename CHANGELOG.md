@@ -7,13 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Data race in concurrent repository index loading** — `ChartSearcher.loadIndex` is called from one goroutine per repo, but the `idxCache` map it read from and wrote to had no synchronization. Go maps are not safe for concurrent access even across distinct keys, so this could corrupt results whenever a chart existed in multiple repos — e.g. `grafana` and `grafana-community` both reporting the same (wrong) chart/app version instead of their own. `idxCache` is now guarded by a mutex. Confirmed with `go test -race` before and after the fix.
+- **Human-readable table showed the installed version instead of each repo's own version** for "up to date" (green) rows. Once the data race above was fixed, the JSON output was already correct per-repo, but the table's non-upgradable branch still printed `r.InstalledChartVersion`/`r.InstalledAppVersion` for every repo row, so e.g. `grafana` and `grafana-community` both displayed the same version even though `grafana`'s own latest (`10.5.15`) genuinely lagged behind what was installed (`12.11.0`, from `grafana-community`).
+
 ### Changed
 
 - **Index lookup now reads the local Helm cache** — the plugin no longer downloads repository indexes from the network on each run. Instead it reads the same `$HELM_REPOSITORY_CACHE/<repo>-index.yaml` files that `helm search repo` uses (populated by `helm repo update`). This aligns the plugin's view of available versions with the rest of the Helm toolchain and avoids redundant network traffic.
+- **Multi-repo results now print one line per repo** instead of a single comma-separated repo list, in both the results table and the generated `helm upgrade` commands. Each repo is evaluated independently against its own chart/app version — a mirrored repo with a different version no longer has another repo's version incorrectly attributed to it, and `--version` in each generated command now matches that specific repo's own chart version.
+- **Table layout: dropped the `old → new` arrow, added a `Running Version` column.** There's no reliable way to know which configured repo a running release was actually installed from (Helm doesn't persist that), so showing a per-repo `installed → latest` arrow implied a repo was the upgrade path when it might not be. The table now has a `Running Version` column (the installed chart version, shown once per release) alongside plain `Chart Version`/`App Version` columns per repo — compare them yourself rather than trusting an arrow tied to the wrong repo.
+- **Non-upgradable releases drop repo rows that don't match the running version.** Once a release has no valid upgrade path, a repo whose own latest chart/app version doesn't equal what's actually installed is just noise (it's behind, or blocked by the app-regression guard). Only the repo(s) confirming the running version are kept; if none match exactly, all repos are shown rather than hiding the release. Applies to both the table and JSON output.
 
 ### Removed
 
 - **`--update` / `-u` flag** — replaced by the standard `helm repo update` workflow. Run `helm repo update` before `helm upgrade-check` the same way you would before `helm search repo`.
+- **Bitnami special-casing** — Bitnami is no longer excluded from version selection when a chart also exists in another repo. It is now treated like any other repository: every repo containing the chart is reported and evaluated on its own version.
 
 ## [2.0.0] - 2026-06-14
 

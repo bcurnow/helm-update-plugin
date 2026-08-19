@@ -3,7 +3,9 @@
     "allow": [
       "Bash(go build *)",
       "Bash(go test *)",
-      "Bash(make *)"
+      "Bash(make *)",
+      "Bash(gofmt *)",
+      "Bash(go vet *)"
     ]
   }
 }

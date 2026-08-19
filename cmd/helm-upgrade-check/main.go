@@ -21,7 +21,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	"helm-upgrade-check-plugin/pkg/upgradecheck"
 
@@ -83,17 +82,25 @@ func main() {
 		fmt.Println("done!")
 	}
 
+	// repoResult carries one repo's own version info for a chart, since a
+	// chart mirrored across multiple repos can have a different version (and
+	// upgradability) in each one.
+	type repoResult struct {
+		Repo               string `json:"repo"`
+		LatestChartVersion string `json:"latest_chart_version"`
+		LatestAppVersion   string `json:"latest_app_version"`
+		Upgradable         bool   `json:"upgradable"`
+	}
+
 	type resultItem struct {
-		ChartName             string   `json:"chart_name"`
-		ReleaseName           string   `json:"release_name"`
-		Namespace             string   `json:"namespace"`
-		InstalledChartVersion string   `json:"installed_chart_version"`
-		LatestChartVersion    string   `json:"latest_chart_version"`
-		InstalledAppVersion   string   `json:"installed_app_version"`
-		LatestAppVersion      string   `json:"latest_app_version"`
-		Repos                 []string `json:"repos"`
-		Upgradable            bool     `json:"upgradable"`
-		Commands              []string `json:"commands,omitempty"`
+		ChartName             string       `json:"chart_name"`
+		ReleaseName           string       `json:"release_name"`
+		Namespace             string       `json:"namespace"`
+		InstalledChartVersion string       `json:"installed_chart_version"`
+		InstalledAppVersion   string       `json:"installed_app_version"`
+		Repos                 []repoResult `json:"repos"`
+		Upgradable            bool         `json:"upgradable"`
+		Commands              []string     `json:"commands,omitempty"`
 	}
 
 	var results []resultItem
@@ -109,33 +116,61 @@ func main() {
 			installedAppVer = "Unknown"
 		}
 		info := searcher.Search(chartName)
-		if len(info.Repos) == 0 {
+		if len(info.Versions) == 0 {
 			errors = append(errors, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
 			continue
 		}
-		latestChartVer := info.Version
-		if latestChartVer == "" || latestChartVer == "null" {
-			latestChartVer = "N/A"
-		}
-		// Compare chart versions — this is what helm upgrade --version accepts.
-		chartNewer := upgradecheck.CompareVersions(latestChartVer, installedChartVer, includePrerel)
-		// Guard: if both app versions are valid semver and the candidate's app
-		// version is strictly older, suppress the upgrade signal. Equal app
-		// versions and non-semver app versions return false (no regression), so
-		// chart-only bumps still flag and unusual app version schemes fall back
-		// to the chart-version decision.
-		appRegresses := upgradecheck.CompareVersions(installedAppVer, info.AppVersion, includePrerel)
-		upgradable := chartNewer && !appRegresses
-		repoList := info.Repos
 
+		var repos []repoResult
 		var commands []string
-		if upgradable {
-			repoListStr := strings.Join(repoList, ",")
-			commands = []string{
-				fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", rel.Namespace, rel.Name, rel.Name),
-				fmt.Sprintf("cat %s.values", rel.Name),
-				// --version takes the chart version, not the app version.
-				fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", rel.Namespace, rel.Name, repoListStr, chartName, latestChartVer, rel.Name),
+		upgradable := false
+		for _, v := range info.Versions {
+			latestChartVer := v.Version
+			if latestChartVer == "" || latestChartVer == "null" {
+				latestChartVer = "N/A"
+			}
+			// Compare chart versions — this is what helm upgrade --version accepts.
+			chartNewer := upgradecheck.CompareVersions(latestChartVer, installedChartVer, includePrerel)
+			// Guard: if both app versions are valid semver and the candidate's app
+			// version is strictly older, suppress the upgrade signal. Equal app
+			// versions and non-semver app versions return false (no regression), so
+			// chart-only bumps still flag and unusual app version schemes fall back
+			// to the chart-version decision.
+			appRegresses := upgradecheck.CompareVersions(installedAppVer, v.AppVersion, includePrerel)
+			repoUpgradable := chartNewer && !appRegresses
+			repos = append(repos, repoResult{
+				Repo:               v.Repo,
+				LatestChartVersion: latestChartVer,
+				LatestAppVersion:   v.AppVersion,
+				Upgradable:         repoUpgradable,
+			})
+			if repoUpgradable {
+				upgradable = true
+				if len(commands) == 0 {
+					commands = append(commands,
+						fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", rel.Namespace, rel.Name, rel.Name),
+						fmt.Sprintf("cat %s.values", rel.Name),
+					)
+				}
+				commands = append(commands, fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", rel.Namespace, rel.Name, v.Repo, chartName, latestChartVer, rel.Name))
+			}
+		}
+
+		if !upgradable {
+			// Nothing to upgrade to, so repos that aren't even running the
+			// installed chart/app version are just noise (they're either
+			// behind, or blocked by the app-regression guard) — keep only the
+			// repo(s) that corroborate what's actually running. If none match
+			// (e.g. the installed version isn't any repo's current latest),
+			// fall back to showing everything rather than hiding the release.
+			var matched []repoResult
+			for _, rv := range repos {
+				if rv.LatestChartVersion == installedChartVer && rv.LatestAppVersion == installedAppVer {
+					matched = append(matched, rv)
+				}
+			}
+			if len(matched) > 0 {
+				repos = matched
 			}
 		}
 
@@ -144,10 +179,8 @@ func main() {
 			ReleaseName:           rel.Name,
 			Namespace:             rel.Namespace,
 			InstalledChartVersion: installedChartVer,
-			LatestChartVersion:    latestChartVer,
 			InstalledAppVersion:   installedAppVer,
-			LatestAppVersion:      info.AppVersion,
-			Repos:                 repoList,
+			Repos:                 repos,
 			Upgradable:            upgradable,
 			Commands:              commands,
 		})
@@ -168,36 +201,30 @@ func main() {
 	}
 
 	// Human output: print table then upgrade commands.
-	// Version columns show "<current>" when up-to-date or "<current> -> <latest>"
-	// when an upgrade is available.
-	printFormat := "%-25s %-25s %-25s %-25s %-35s %-35s\n"
+	// A "Running Version" column shows the installed chart version so it can
+	// be compared against each repo's own Chart/App Version columns directly
+	// — there's no reliable way to know which repo a running release actually
+	// came from, so an "old -> new" arrow on a per-repo line would wrongly
+	// imply that repo is the upgrade path.
+	printFormat := "%-25s %-25s %-25s %-20s %-18s %-18s %-18s\n"
 	upToDatePrintf := color.New(color.FgGreen).PrintfFunc()
-	redSprint := color.New(color.FgRed).SprintFunc()
-	blueSprint := color.New(color.FgBlue).SprintFunc()
-	// versionCol builds a version upgrade string "old -> new" with the old
-	// version in red and the new version in blue, padded to width visible chars.
-	// We pad manually because %-Ns counts ANSI escape bytes toward the width.
-	versionCol := func(old, latest string, width int) string {
-		pad := width - len(old) - len(" -> ") - len(latest)
-		if pad < 0 {
-			pad = 0
-		}
-		return redSprint(old) + " -> " + blueSprint(latest) + strings.Repeat(" ", pad)
-	}
+	upgradablePrintf := color.New(color.FgBlue).PrintfFunc()
 	fmt.Println()
-	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Chart Version", "App Version")
-	fmt.Printf(printFormat, "----------", "------------", "---------", "-------", "-------------", "-----------")
+	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Running Version", "Chart Version", "App Version")
+	fmt.Printf(printFormat, "----------", "------------", "---------", "-------", "---------------", "-------------", "-----------")
 	var upgradableResults []resultItem
 	for _, r := range results {
-		repoListStr := strings.Join(r.Repos, ",")
+		// A chart found in multiple repos gets one line per repo, each showing
+		// that repo's own chart/app version rather than a shared value.
+		for _, rv := range r.Repos {
+			if rv.Upgradable {
+				upgradablePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+			} else {
+				upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+			}
+		}
 		if r.Upgradable {
-			fmt.Printf("%-25s %-25s %-25s %-25s %s %s\n",
-				r.ChartName, r.ReleaseName, r.Namespace, repoListStr,
-				versionCol(r.InstalledChartVersion, r.LatestChartVersion, 35),
-				versionCol(r.InstalledAppVersion, r.LatestAppVersion, 35))
 			upgradableResults = append(upgradableResults, r)
-		} else {
-			upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, repoListStr, r.InstalledChartVersion, r.InstalledAppVersion)
 		}
 	}
 

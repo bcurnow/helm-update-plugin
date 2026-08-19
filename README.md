@@ -73,23 +73,24 @@ helm upgrade-check --json
 The plugin outputs a table with the following columns:
 
 ```
-Chart Name      Release Name    Namespace       Repo(s)   Chart Version     App Version
-----------      ------------    ---------       -------   -------------     -----------
+Chart Name      Release Name    Namespace       Repo(s)   Running Version   Chart Version     App Version
+----------      ------------    ---------       -------   ---------------   -------------     -----------
 ```
 
 | Column | Description |
 |--------|-------------|
-| **Chart Version** | The chart version currently installed (used for `--version` in `helm upgrade`) |
-| **App Version** | The application version bundled with the installed chart |
+| **Running Version** | The chart version currently installed |
+| **Chart Version** | This repo's own latest chart version (used for `--version` in `helm upgrade` when it's the upgrade path) |
+| **App Version** | This repo's own latest application version |
 
-Up-to-date releases are shown in **green**. Releases with available upgrades show `installed → latest` with the installed version in **red** and the latest in **blue**.
+A chart found in multiple repos gets one row per repo, each showing that repo's own Chart Version / App Version next to the same Running Version — there's no reliable way to know which repo a running release was actually installed from (Helm doesn't persist that), so the table doesn't guess; compare Running Version against each repo's row yourself.
 
 > **Note:** `helm upgrade --version` takes the **chart version**, not the application version. These differ for many charts — for example `ingress-nginx` chart `4.9.1` ships app version `1.9.1`. The plugin always uses the chart version for upgrade commands.
 
 ### Status Indicators
 
-- `old → new` in red/blue — a newer chart version is available and its app version does not regress
-- **Green text** — up-to-date: no newer version found, or the only "newer" chart ships an older app version (suppressed)
+- **Blue text** — this repo offers a newer chart version and its app version does not regress
+- **Green text** — up-to-date from this repo: no newer version found, or the only "newer" chart ships an older app version (suppressed)
 
 ### Version Selection and Upgrade Suppression
 
@@ -102,27 +103,24 @@ If condition 2 fails — the highest available chart version ships an older appl
 
 > **Important:** the plugin picks the *highest* chart version from each repo and tests it against the app-regression guard. It does not search backward through lower chart versions looking for a non-regressing upgrade. If your highest available chart version ships an older app, the release will show as up-to-date even if an intermediate chart version exists that would be a valid upgrade. This is expected and correct for well-maintained repositories where chart and app versions advance together.
 
-### Bitnami Repository Handling
+### Multiple Repositories
 
-Bitnami mirrors many upstream charts under its own **independent version numbering** that is incompatible with upstream chart versions. For example, `bitnami/cilium` may be versioned `3.1.9` while the upstream `cilium/cilium` is at `1.19.4`. Comparing these version numbers directly would produce incorrect results — Bitnami `3.1.9 > 1.19.4` numerically, but the Bitnami chart ships an older application version than the upstream chart.
+If a chart is found in more than one configured repository (including Bitnami, which is treated like any other repo), each repo is evaluated **independently** — its own chart version and app version are compared against the installed release, since mirrored repos don't necessarily carry the same version. The results table shows one line per repo (see the Running Version column above), and a release is flagged as upgradable if **any** repo offers a valid upgrade.
 
-The plugin handles this by excluding Bitnami from version selection whenever the chart is also present in at least one non-Bitnami repository:
-
-- If the chart exists in **both Bitnami and a non-Bitnami repo** — Bitnami's version and app version are excluded from the comparison entirely. Only the non-Bitnami repo's version is used to determine whether an upgrade is available. The upgrade command will reference the non-Bitnami repo.
-- If the chart exists **only in Bitnami** — Bitnami's version is used normally as the sole available source.
+When a release is **not** upgradable, repos whose own latest chart/app version doesn't exactly match what's running are dropped from the output — they're either behind or blocked by the app-regression guard, so they're just noise once there's nothing to do. Only the repo(s) that corroborate the running version are shown. If no repo's latest happens to exactly match what's running (e.g. it's since been superseded everywhere), all repos are shown instead of hiding the release.
 
 ### Upgrade Commands
 
-For each out-of-date release, the plugin prints three commands:
+For each release with at least one repo offering a valid upgrade, the plugin prints:
 
 1. **Get current values** — saves the release's current values to a file
 2. **Review values** — displays the saved values for inspection
-3. **Execute upgrade** — performs the actual upgrade with the latest **chart** version
+3. **Execute upgrade** — one command per repo that offers an upgrade, each using that repo's own **chart** version
 
 Example output:
 
 ```
-ingress-nginx   ingress-nginx   ingress    ingress-nginx   4.9.1 → 4.10.0   1.9.1 → 1.10.1
+ingress-nginx   ingress-nginx   ingress    ingress-nginx   4.9.1             4.10.0            1.10.1
 
 
 Upgrade commands:
@@ -144,14 +142,21 @@ Use `--json` / `-j` for machine-readable output. Each result includes:
   "release_name": "ingress-nginx",
   "namespace": "ingress",
   "installed_chart_version": "4.9.1",
-  "latest_chart_version": "4.10.0",
   "installed_app_version": "1.9.1",
-  "latest_app_version": "1.10.1",
-  "repos": ["ingress-nginx"],
+  "repos": [
+    {
+      "repo": "ingress-nginx",
+      "latest_chart_version": "4.10.0",
+      "latest_app_version": "1.10.1",
+      "upgradable": true
+    }
+  ],
   "upgradable": true,
   "commands": [...]
 }
 ```
+
+Each entry in `repos` carries that repo's own `latest_chart_version` / `latest_app_version` / `upgradable` — a chart found in multiple repos can have a different version (and upgrade verdict) per repo. The top-level `upgradable` is `true` if any repo offers a valid upgrade.
 
 ### Error Handling
 
@@ -193,9 +198,8 @@ The plugin follows the same model as other Helm commands:
 
 1. **Reads locally cached indexes** — uses the same `$HELM_REPOSITORY_CACHE/<repo>-index.yaml` files that `helm search repo` reads, populated by `helm repo update`. No network requests are made during the check itself.
 2. **In-memory result caching** — chart version lookups within a single run are memoized so multiple releases of the same chart (e.g. two cilium releases in different namespaces) only parse the index once.
-3. **Bitnami exclusion** — when a chart exists in both a non-Bitnami repo and Bitnami, Bitnami is excluded from version selection entirely. Bitnami maintains its own version numbering that is incompatible with upstream chart versions; mixing the two produces incorrect comparisons. Bitnami is used as a fallback only when it is the sole source for a chart.
-4. **Semantic versioning** — correctly compares versions, including pre-release handling (`--include-prerelease` to opt in).
-5. **OCI registry support** — resolves `oci://` charts by querying tags and fetching manifests directly from the registry.
+3. **Semantic versioning** — correctly compares versions, including pre-release handling (`--include-prerelease` to opt in).
+4. **OCI registry support** — resolves `oci://` charts by querying tags and fetching manifests directly from the registry.
 
 ### API Integration
 

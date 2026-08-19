@@ -90,24 +90,21 @@ repositories:
 	}
 }
 
-func TestChartSearcher_Search_BitnamiExcluded(t *testing.T) {
-	// When a chart exists in both a non-bitnami repo and bitnami, bitnami's
-	// version must NOT influence the result — bitnami uses independent version
-	// numbering that is incompatible with upstream chart versions.
+func TestChartSearcher_Search_MultipleRepos(t *testing.T) {
+	// When a chart exists in multiple repos, all of them should be reported
+	// and the highest version across all of them wins — no repo (including
+	// bitnami) gets special treatment.
 	repos := []*repo.Entry{
 		{Name: "r1"},
 		{Name: "bitnami"},
 	}
 	searcher := NewChartSearcher(repos, "", false)
 
-	// r1 has upstream chart version 1.0.0
 	searcher.idxCache["r1"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
 			"redis": {&repo.ChartVersion{Metadata: &chartv2.Metadata{Version: "1.0.0", AppVersion: "7.0.0"}}},
 		},
 	}
-	// bitnami has a higher-looking version 2.0.0 but it is on bitnami's own
-	// numbering scheme and must not override the upstream version.
 	searcher.idxCache["bitnami"] = &repo.IndexFile{
 		Entries: map[string]repo.ChartVersions{
 			"redis": {&repo.ChartVersion{Metadata: &chartv2.Metadata{Version: "2.0.0", AppVersion: "7.2.0"}}},
@@ -115,11 +112,9 @@ func TestChartSearcher_Search_BitnamiExcluded(t *testing.T) {
 	}
 
 	res := searcher.Search("redis")
-	// Bitnami is excluded from version selection because r1 also has the chart.
-	// The result must come from r1 only.
-	assert.Equal(t, "1.0.0", res.Version)
-	assert.Equal(t, "7.0.0", res.AppVersion)
-	assert.Equal(t, []string{"r1"}, res.Repos)
+	assert.Equal(t, "2.0.0", res.Version)
+	assert.Equal(t, "7.2.0", res.AppVersion)
+	assert.ElementsMatch(t, []string{"r1", "bitnami"}, res.Repos)
 
 	// ensure caching works
 	searcher.idxCache = map[string]*repo.IndexFile{}
@@ -127,28 +122,39 @@ func TestChartSearcher_Search_BitnamiExcluded(t *testing.T) {
 	assert.Equal(t, res, res2)
 }
 
-func TestChartSearcher_Search_BitnamiOnlyFallback(t *testing.T) {
-	// When bitnami is the ONLY repo that has the chart, use bitnami's version.
-	repos := []*repo.Entry{
-		{Name: "r1"},
-		{Name: "bitnami"},
+func TestChartSearcher_Search_ConcurrentLoadKeepsRepoVersionsDistinct(t *testing.T) {
+	// Regression test: loadIndex is called concurrently (one goroutine per
+	// repo) from Search, and idxCache used to be a plain map written from
+	// those goroutines with no synchronization. That data race could corrupt
+	// results so that two different repos ended up reporting the same
+	// (wrong) chart/app version. This test forces the real disk-load path
+	// (unlike the test above, which pre-populates idxCache before Search
+	// runs, sidestepping the concurrent loadIndex path entirely) and repeats
+	// the search many times to make a reintroduced race likely to surface.
+	cacheDir := t.TempDir()
+	writeIndex := func(repoName, version string) {
+		yaml := fmt.Sprintf("apiVersion: v1\nentries:\n  grafana:\n    - name: grafana\n      version: %s\n      appVersion: %s\n", version, version)
+		path := filepath.Join(cacheDir, helmpath.CacheIndexFile(repoName))
+		if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	searcher := NewChartSearcher(repos, "", false)
+	writeIndex("grafana", "8.0.0")
+	writeIndex("grafana-community", "9.0.0")
 
-	// r1 does not have the chart
-	searcher.idxCache["r1"] = &repo.IndexFile{
-		Entries: map[string]repo.ChartVersions{},
-	}
-	searcher.idxCache["bitnami"] = &repo.IndexFile{
-		Entries: map[string]repo.ChartVersions{
-			"redis": {&repo.ChartVersion{Metadata: &chartv2.Metadata{Version: "19.0.0", AppVersion: "7.4.0"}}},
-		},
-	}
+	repos := []*repo.Entry{{Name: "grafana"}, {Name: "grafana-community"}}
 
-	res := searcher.Search("redis")
-	assert.Equal(t, "19.0.0", res.Version)
-	assert.Equal(t, "7.4.0", res.AppVersion)
-	assert.Equal(t, []string{"bitnami"}, res.Repos)
+	for i := 0; i < 50; i++ {
+		searcher := NewChartSearcher(repos, cacheDir, false)
+		res := searcher.Search("grafana")
+
+		byRepo := map[string]string{}
+		for _, v := range res.Versions {
+			byRepo[v.Repo] = v.Version
+		}
+		assert.Equal(t, "8.0.0", byRepo["grafana"], "iteration %d", i)
+		assert.Equal(t, "9.0.0", byRepo["grafana-community"], "iteration %d", i)
+	}
 }
 
 func TestChartSearcher_NoChart(t *testing.T) {
@@ -245,21 +251,6 @@ func TestConvertReleaseList_ChartVersionDiffersFromAppVersion(t *testing.T) {
 		assert.Equal(t, "ingress-nginx-4.9.1", out[0].Chart)
 		assert.Equal(t, "4.9.1", out[0].ChartVersion)
 		assert.Equal(t, "1.9.1", out[0].AppVersion)
-	}
-}
-
-func TestFindHelpers(t *testing.T) {
-	charts := []Chart{
-		{Name: "foo/bar", AppVersion: "1.2"},
-		{Name: "foo/baz", AppVersion: "2.3"},
-	}
-	// verify free helper wrappers behave same as index methods
-	repos := FindRepos("bar", charts)
-	if len(repos) != 1 || repos[0] != "foo" {
-		t.Errorf("FindRepos returned %v", repos)
-	}
-	if v := FindUpgradeVersion("baz", charts); v != "2.3" {
-		t.Errorf("FindUpgradeVersion returned %s", v)
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 
 	"helm-upgrade-check-plugin/pkg/upgradecheck"
 
+	"github.com/fatih/color"
 	"helm.sh/helm/v4/pkg/cli"
 	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
@@ -60,7 +61,9 @@ func TestMain_JSONOutput(t *testing.T) {
 	}
 
 	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
-		return &fakeSearcher{res: upgradecheck.ChartSearchResult{Repos: []string{"testrepo"}, Version: "2.0", AppVersion: "2.0-app"}}
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{{Repo: "testrepo", Version: "2.0", AppVersion: "2.0-app"}},
+		}}
 	}
 
 	// capture stdout
@@ -96,8 +99,13 @@ func TestMain_JSONOutput(t *testing.T) {
 	}
 	res := results[0].(map[string]interface{})
 	cmds, ok := res["commands"].([]interface{})
-	if res["latest_chart_version"] != "2.0" {
-		t.Fatalf("expected latest_chart_version 2.0, got %v", res["latest_chart_version"])
+	repos, _ := res["repos"].([]interface{})
+	if len(repos) != 1 {
+		t.Fatalf("expected 1 repo, got %v", res["repos"])
+	}
+	repo0 := repos[0].(map[string]interface{})
+	if repo0["latest_chart_version"] != "2.0" {
+		t.Fatalf("expected latest_chart_version 2.0, got %v", repo0["latest_chart_version"])
 	}
 	if res["installed_chart_version"] != "1.0" {
 		t.Fatalf("expected installed_chart_version 1.0, got %v", res["installed_chart_version"])
@@ -146,9 +154,9 @@ func TestMain_ChartVersionDiffersFromAppVersion(t *testing.T) {
 	}
 	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
-			Repos:      []string{"ingress-nginx"},
-			Version:    "4.10.0", // latest chart version
-			AppVersion: "1.10.1", // latest app version
+			Versions: []upgradecheck.RepoChartVersion{
+				{Repo: "ingress-nginx", Version: "4.10.0", AppVersion: "1.10.1"},
+			},
 		}}
 	}
 
@@ -174,14 +182,19 @@ func TestMain_ChartVersionDiffersFromAppVersion(t *testing.T) {
 	if res["installed_chart_version"] != "4.9.1" {
 		t.Errorf("installed_chart_version: got %v, want 4.9.1", res["installed_chart_version"])
 	}
-	if res["latest_chart_version"] != "4.10.0" {
-		t.Errorf("latest_chart_version: got %v, want 4.10.0", res["latest_chart_version"])
+	repos, _ := res["repos"].([]interface{})
+	if len(repos) != 1 {
+		t.Fatalf("expected 1 repo, got %v", res["repos"])
+	}
+	repo0 := repos[0].(map[string]interface{})
+	if repo0["latest_chart_version"] != "4.10.0" {
+		t.Errorf("latest_chart_version: got %v, want 4.10.0", repo0["latest_chart_version"])
 	}
 	if res["installed_app_version"] != "1.9.1" {
 		t.Errorf("installed_app_version: got %v, want 1.9.1", res["installed_app_version"])
 	}
-	if res["latest_app_version"] != "1.10.1" {
-		t.Errorf("latest_app_version: got %v, want 1.10.1", res["latest_app_version"])
+	if repo0["latest_app_version"] != "1.10.1" {
+		t.Errorf("latest_app_version: got %v, want 1.10.1", repo0["latest_app_version"])
 	}
 	if up, _ := res["upgradable"].(bool); !up {
 		t.Error("expected upgradable=true when chart version 4.9.1 < 4.10.0")
@@ -283,7 +296,9 @@ func TestMain_HumanOutput(t *testing.T) {
 		}, nil
 	}
 	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
-		return &fakeSearcher{res: upgradecheck.ChartSearchResult{Repos: []string{"repo"}, Version: "2.0"}}
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{{Repo: "repo", Version: "2.0"}},
+		}}
 	}
 
 	r, w, _ := os.Pipe()
@@ -337,9 +352,10 @@ func TestMain_AppVersionRegression_NotUpgradable(t *testing.T) {
 	}
 	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
-			Repos:      []string{"some-repo"},
-			Version:    "3.1.9",  // higher chart version …
-			AppVersion: "1.18.1", // … but ships an older app version
+			Versions: []upgradecheck.RepoChartVersion{
+				// higher chart version … but ships an older app version
+				{Repo: "some-repo", Version: "3.1.9", AppVersion: "1.18.1"},
+			},
 		}}
 	}
 
@@ -396,9 +412,10 @@ func TestMain_ChartOnlyBump_IsUpgradable(t *testing.T) {
 	}
 	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
 		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
-			Repos:      []string{"myrepo"},
-			Version:    "1.1.0", // chart version bumped …
-			AppVersion: "2.0.0", // … same app version
+			Versions: []upgradecheck.RepoChartVersion{
+				// chart version bumped … same app version
+				{Repo: "myrepo", Version: "1.1.0", AppVersion: "2.0.0"},
+			},
 		}}
 	}
 
@@ -429,5 +446,346 @@ func TestMain_ChartOnlyBump_IsUpgradable(t *testing.T) {
 	upgradeCmd, _ := cmds[2].(string)
 	if !strings.Contains(upgradeCmd, "--version 1.1.0") {
 		t.Errorf("upgrade command should use chart version 1.1.0, got: %s", upgradeCmd)
+	}
+}
+
+func TestMain_MultipleRepos_EachKeepsItsOwnVersion(t *testing.T) {
+	// A chart found in two repos with different versions must report each
+	// repo's own version rather than duplicating one repo's version onto the
+	// other's line, and the upgrade command for each repo must reference that
+	// repo's own version.
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	}()
+
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{
+			Name:         "redis",
+			Namespace:    "default",
+			Chart:        "redis-1.0.0",
+			ChartVersion: "1.0.0",
+			AppVersion:   "7.0.0",
+		}}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{
+				// r1 is already up to date at the installed version.
+				{Repo: "r1", Version: "1.0.0", AppVersion: "7.0.0"},
+				// bitnami has a newer version — must NOT be excluded, and must
+				// not leak its version onto r1's line.
+				{Repo: "bitnami", Version: "2.0.0", AppVersion: "7.2.0"},
+			},
+		}}
+	}
+
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	os.Args = []string{"cmd", "--json"}
+	main()
+
+	_ = w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	if up, _ := res["upgradable"].(bool); !up {
+		t.Error("expected upgradable=true since bitnami offers a newer version")
+	}
+
+	repos, _ := res["repos"].([]interface{})
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %v", res["repos"])
+	}
+	byRepo := map[string]map[string]interface{}{}
+	for _, ri := range repos {
+		rm := ri.(map[string]interface{})
+		byRepo[rm["repo"].(string)] = rm
+	}
+
+	r1 := byRepo["r1"]
+	if r1["latest_chart_version"] != "1.0.0" {
+		t.Errorf("r1 latest_chart_version: got %v, want 1.0.0", r1["latest_chart_version"])
+	}
+	if up, _ := r1["upgradable"].(bool); up {
+		t.Error("r1 should not be upgradable — it's already at the installed version")
+	}
+
+	bitnami := byRepo["bitnami"]
+	if bitnami["latest_chart_version"] != "2.0.0" {
+		t.Errorf("bitnami latest_chart_version: got %v, want 2.0.0", bitnami["latest_chart_version"])
+	}
+	if up, _ := bitnami["upgradable"].(bool); !up {
+		t.Error("bitnami should be upgradable — it has a newer version than installed")
+	}
+
+	// Only one upgrade command set should be generated (for bitnami), and it
+	// must reference bitnami's own version, not r1's.
+	cmds, _ := res["commands"].([]interface{})
+	if len(cmds) != 3 {
+		t.Fatalf("expected 3 commands (one repo is upgradable), got %d: %v", len(cmds), cmds)
+	}
+	upgradeCmd, _ := cmds[2].(string)
+	if !strings.Contains(upgradeCmd, "bitnami/redis --version 2.0.0") {
+		t.Errorf("upgrade command must use bitnami's own version, got: %s", upgradeCmd)
+	}
+}
+
+// runMainCapturingOutput redirects both os.Stdout and color.Output (which is
+// captured once at init from the original os.Stdout and does not track later
+// reassignment — the "up to date"/"upgradable" rows print via
+// color.PrintfFunc, so it must be redirected too) around a call to main, and
+// returns everything written to stdout.
+func runMainCapturingOutput(t *testing.T, args []string) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	oldColorOutput := color.Output
+	os.Stdout = w
+	color.Output = w
+
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	os.Args = args
+	main()
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+	color.Output = oldColorOutput
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+// grafanaRepoLines finds the "grafana" and "grafana-community" repo rows (if
+// present) among the printed table lines for a release in "monitoring".
+func grafanaRepoLines(out string) (grafanaLine, communityLine string) {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "Upgrade commands:") {
+			break // only scan the table, not the generated helm upgrade commands
+		}
+		if !strings.Contains(l, "monitoring") {
+			continue
+		}
+		if strings.Contains(l, "grafana-community") {
+			communityLine = l
+		} else if strings.Contains(l, "grafana") {
+			grafanaLine = l
+		}
+	}
+	return grafanaLine, communityLine
+}
+
+func TestMain_HumanOutput_UpgradableRelease_EachRepoShowsItsOwnVersion(t *testing.T) {
+	// Regression test: the human-readable table used to print the release's
+	// installed version for every repo line instead of that repo's own
+	// available version. That made two repos with genuinely different
+	// versions (e.g. grafana at 10.5.15 vs grafana-community at 13.0.0, with
+	// 12.11.0 installed) both display the same version, hiding the real data.
+	// The release here is upgradable (grafana-community offers a newer
+	// version), so both repo rows are kept — see the companion test below for
+	// the not-upgradable case, where the non-matching row is dropped instead.
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	}()
+
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{
+			Name:         "grafana",
+			Namespace:    "monitoring",
+			Chart:        "grafana-12.11.0",
+			ChartVersion: "12.11.0",
+			AppVersion:   "13.2.0",
+		}}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{
+				// grafana repo lags behind what's installed — not upgradable,
+				// but it must still show its own (older) version, not 12.11.0.
+				{Repo: "grafana", Version: "10.5.15", AppVersion: "12.3.1"},
+				// grafana-community offers a newer version, making the release
+				// upgradable overall.
+				{Repo: "grafana-community", Version: "13.0.0", AppVersion: "14.0.0"},
+			},
+		}}
+	}
+
+	out := runMainCapturingOutput(t, []string{"cmd"})
+	grafanaLine, communityLine := grafanaRepoLines(out)
+
+	// Columns: Chart Name, Release Name, Namespace, Repo(s), Running Version,
+	// Chart Version, App Version.
+	gf := strings.Fields(grafanaLine)
+	cf := strings.Fields(communityLine)
+	if len(gf) != 7 {
+		t.Fatalf("expected 7 fields in grafana repo line, got %d: %v", len(gf), gf)
+	}
+	if len(cf) != 7 {
+		t.Fatalf("expected 7 fields in grafana-community repo line, got %d: %v", len(cf), cf)
+	}
+
+	if gf[4] != "12.11.0" {
+		t.Errorf("grafana repo line running version: got %q, want 12.11.0 (the installed version)", gf[4])
+	}
+	if gf[5] != "10.5.15" || gf[6] != "12.3.1" {
+		t.Errorf("grafana repo line must show its own chart/app version 10.5.15/12.3.1, got chart=%q app=%q", gf[5], gf[6])
+	}
+
+	if cf[4] != "12.11.0" {
+		t.Errorf("grafana-community repo line running version: got %q, want 12.11.0", cf[4])
+	}
+	if cf[5] != "13.0.0" || cf[6] != "14.0.0" {
+		t.Errorf("grafana-community repo line must show its own chart/app version 13.0.0/14.0.0, got chart=%q app=%q", cf[5], cf[6])
+	}
+}
+
+func TestMain_NotUpgradable_DropsRepoEntriesNotMatchingRunningVersion(t *testing.T) {
+	// When a release isn't upgradable, a repo whose own latest doesn't match
+	// what's actually running is just noise (it's either behind or blocked by
+	// the app-regression guard) — it should be dropped rather than printed
+	// alongside the repo that corroborates the running version.
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	}()
+
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{
+			Name:         "grafana",
+			Namespace:    "monitoring",
+			Chart:        "grafana-12.11.0",
+			ChartVersion: "12.11.0",
+			AppVersion:   "13.2.0",
+		}}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{
+				// grafana repo lags behind what's installed — not upgradable,
+				// and doesn't match the running version, so it should be
+				// dropped from the output entirely.
+				{Repo: "grafana", Version: "10.5.15", AppVersion: "12.3.1"},
+				// grafana-community exactly matches what's installed — not
+				// upgradable, but it corroborates the running version and
+				// must be kept.
+				{Repo: "grafana-community", Version: "12.11.0", AppVersion: "13.2.0"},
+			},
+		}}
+	}
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	repos, _ := res["repos"].([]interface{})
+	if len(repos) != 1 {
+		t.Fatalf("expected 1 repo (grafana dropped, grafana-community kept), got %v", res["repos"])
+	}
+	repo0 := repos[0].(map[string]interface{})
+	if repo0["repo"] != "grafana-community" {
+		t.Errorf("expected surviving repo to be grafana-community, got %v", repo0["repo"])
+	}
+
+	humanOut := runMainCapturingOutput(t, []string{"cmd"})
+	grafanaLine, communityLine := grafanaRepoLines(humanOut)
+	if grafanaLine != "" {
+		t.Errorf("grafana repo line should have been dropped, got: %q", grafanaLine)
+	}
+	if communityLine == "" {
+		t.Error("grafana-community repo line should still be present")
+	}
+}
+
+func TestMain_NotUpgradable_NoRepoMatchesRunning_KeepsAllEntries(t *testing.T) {
+	// Edge case: if the installed version doesn't match ANY repo's current
+	// latest (e.g. it's since been superseded everywhere, or was never any
+	// repo's "latest"), dropping non-matching rows would hide the release
+	// entirely. Fall back to showing everything instead.
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	}()
+
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{
+			Name:         "grafana",
+			Namespace:    "monitoring",
+			Chart:        "grafana-12.11.0",
+			ChartVersion: "12.11.0",
+			AppVersion:   "13.2.0",
+		}}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{
+				// Older than installed — not upgradable.
+				{Repo: "grafana", Version: "10.5.15", AppVersion: "12.3.1"},
+				// Higher chart version but app version regresses — blocked,
+				// not upgradable, and doesn't match installed either.
+				{Repo: "grafana-community", Version: "13.0.0", AppVersion: "12.0.0"},
+			},
+		}}
+	}
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	repos, _ := res["repos"].([]interface{})
+	if len(repos) != 2 {
+		t.Fatalf("expected both repos kept as a fallback since neither matches running, got %v", res["repos"])
 	}
 }

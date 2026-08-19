@@ -86,13 +86,27 @@ func LoadRepoEntries(settings *cli.EnvSettings) ([]*repo.Entry, error) {
 	return entries, nil
 }
 
+// RepoChartVersion is the chart version and app version found for a chart in
+// a single repository.  A chart mirrored across multiple repositories can
+// have a different version in each one, so these must be tracked per-repo
+// rather than collapsed into a single "latest" value.
+type RepoChartVersion struct {
+	Repo       string
+	Version    string // chart version in this repo (authoritative for helm upgrade --version)
+	AppVersion string // app version of that chart release in this repo (for display only)
+}
+
 // ChartSearchResult is the information returned from a chart lookup.
-// Version is the latest chart version (used for --version in helm upgrade).
-// AppVersion is the application version bundled with that chart release.
+// Versions holds one entry per repository that has the chart. Version and
+// AppVersion summarize the single highest chart version across all repos
+// (authoritative for determining whether any upgrade exists at all); use
+// Versions when the per-repo version is needed, e.g. to build a
+// `helm upgrade <repo>/<chart> --version <that repo's version>` command.
 type ChartSearchResult struct {
 	Repos      []string
-	Version    string // latest chart version (authoritative for helm upgrade --version)
-	AppVersion string // app version of the latest chart release (for display only)
+	Version    string // highest chart version across all repos
+	AppVersion string // app version paired with the highest chart version
+	Versions   []RepoChartVersion
 }
 
 // ChartSearcher performs on-demand lookups of repository indexes to resolve
@@ -100,6 +114,7 @@ type ChartSearchResult struct {
 // repeated disk reads when scanning many releases.
 type ChartSearcher struct {
 	repos         []*repo.Entry
+	idxCacheMu    sync.Mutex // guards idxCache; Search loads indexes from concurrent goroutines
 	idxCache      map[string]*repo.IndexFile
 	resultMap     map[string]ChartSearchResult
 	includePrerel bool
@@ -127,8 +142,7 @@ func NewChartSearcher(repos []*repo.Entry, cacheDir string, includePrerel bool) 
 
 // Search returns a ChartSearchResult for chartName.  If the result was
 // previously computed, it is returned from the cache; otherwise the method
-// scans each repository index, updates the cache, and applies the "bitnami"
-// deduplication rule.
+// scans each repository index and updates the cache.
 func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 	if r, ok := s.resultMap[chartName]; ok {
 		return r
@@ -194,54 +208,21 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 		close(ch)
 	}()
 
-	// Collect all per-repo results into a slice so we can apply the bitnami
-	// deduplication rule to both the version selection AND the repo list.
-	type repoResult struct {
-		repo, version, appVersion string
-	}
-	var all []repoResult
-	for r := range ch {
-		all = append(all, repoResult{r.repo, r.version, r.appVersion})
-	}
-
-	// If the chart was found in at least one non-bitnami repo, drop bitnami
-	// results entirely before selecting the winning version.  Bitnami uses its
-	// own independent version numbering that is incompatible with upstream chart
-	// versions, so mixing bitnami and upstream versions produces incorrect
-	// comparisons (e.g. bitnami/cilium 3.1.9 vs upstream cilium 1.19.4).
-	hasNonBitnami := false
-	for _, r := range all {
-		if r.repo != "bitnami" {
-			hasNonBitnami = true
-			break
-		}
-	}
-	candidates := all
-	if hasNonBitnami {
-		filtered := all[:0]
-		for _, r := range all {
-			if r.repo != "bitnami" {
-				filtered = append(filtered, r)
-			}
-		}
-		candidates = filtered
-	}
-
-	uniq := make(map[string]struct{})
+	var versions []RepoChartVersion
 	var latestChartVer, latestAppVer string
-	for _, r := range candidates {
-		uniq[r.repo] = struct{}{}
+	for r := range ch {
+		versions = append(versions, RepoChartVersion{Repo: r.repo, Version: r.version, AppVersion: r.appVersion})
 		if latestChartVer == "" || CompareVersions(r.version, latestChartVer, s.includePrerel) {
 			latestChartVer = r.version
 			latestAppVer = r.appVersion
 		}
 	}
-	reposFound := make([]string, 0, len(uniq))
-	for k := range uniq {
-		reposFound = append(reposFound, k)
+	reposFound := make([]string, len(versions))
+	for i, v := range versions {
+		reposFound[i] = v.Repo
 	}
 
-	res := ChartSearchResult{Repos: reposFound, Version: latestChartVer, AppVersion: latestAppVer}
+	res := ChartSearchResult{Repos: reposFound, Version: latestChartVer, AppVersion: latestAppVer, Versions: versions}
 	s.resultMap[chartName] = res
 	return res
 }
@@ -260,8 +241,26 @@ var registryClientFactory = func() (ociClient, error) {
 	return registry.NewClient()
 }
 
+// getCachedIndex and setCachedIndex guard idxCache with a mutex because
+// loadIndex is invoked concurrently (one goroutine per repo) from Search.
+// Go maps are not safe for concurrent access even across distinct keys, and
+// an unsynchronized map here previously produced corrupted/aliased results
+// when a chart existed in multiple repos.
+func (s *ChartSearcher) getCachedIndex(name string) (*repo.IndexFile, bool) {
+	s.idxCacheMu.Lock()
+	defer s.idxCacheMu.Unlock()
+	idx, ok := s.idxCache[name]
+	return idx, ok
+}
+
+func (s *ChartSearcher) setCachedIndex(name string, idx *repo.IndexFile) {
+	s.idxCacheMu.Lock()
+	defer s.idxCacheMu.Unlock()
+	s.idxCache[name] = idx
+}
+
 func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
-	if idx, ok := s.idxCache[entry.Name]; ok {
+	if idx, ok := s.getCachedIndex(entry.Name); ok {
 		return idx, nil
 	}
 	// OCI registry support: when a repo URL starts with oci:// we query the
@@ -280,7 +279,7 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 		}
 		if len(tags) == 0 {
 			empty := &repo.IndexFile{Entries: map[string]repo.ChartVersions{}}
-			s.idxCache[entry.Name] = empty
+			s.setCachedIndex(entry.Name, empty)
 			return empty, nil
 		}
 		latest := tags[0]
@@ -315,7 +314,7 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 			},
 			URLs: []string{entry.URL},
 		}}
-		s.idxCache[entry.Name] = idx
+		s.setCachedIndex(entry.Name, idx)
 		return idx, nil
 	}
 
@@ -326,7 +325,7 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.idxCache[entry.Name] = idx
+	s.setCachedIndex(entry.Name, idx)
 	return idx, nil
 }
 
