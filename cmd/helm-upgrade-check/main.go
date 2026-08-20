@@ -18,9 +18,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"helm-upgrade-check-plugin/pkg/upgradecheck"
 
@@ -31,6 +33,11 @@ import (
 
 var exitFunc = os.Exit
 var Version = "dev"
+
+type joinedError interface {
+	error
+	Unwrap() []error
+}
 
 func main() {
 	var debug bool
@@ -68,6 +75,19 @@ func main() {
 	if !jsonOut {
 		fmt.Println("done!")
 	}
+	warnings := []string{}
+	seenWarnings := map[string]struct{}{}
+	addWarning := func(message string) {
+		if _, ok := seenWarnings[message]; ok {
+			return
+		}
+		seenWarnings[message] = struct{}{}
+		warnings = append(warnings, message)
+		fmt.Fprintln(os.Stderr, "warning:", message)
+	}
+	if len(repoEntries) == 0 {
+		addWarning("no repositories are configured; every release will be reported as missing")
+	}
 
 	searcher := newChartSearcherFunc(repoEntries, settings.RepositoryCache, includePrerel)
 
@@ -76,9 +96,14 @@ func main() {
 	}
 	releases, err := fetchReleasesFunc(settings, debug)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error retrieving releases:", err)
-		exitFunc(1)
-		return
+		if len(releases) == 0 {
+			fmt.Fprintln(os.Stderr, "error retrieving releases:", err)
+			exitFunc(1)
+			return
+		}
+		for _, component := range flattenWarningErrors(err) {
+			addWarning(fmt.Sprintf("release could not be decoded: %v", component))
+		}
 	}
 	if !jsonOut {
 		fmt.Println("done!")
@@ -113,31 +138,28 @@ func main() {
 	}
 
 	var results []resultItem
-	var errors []upgradecheck.MissingChartError
+	var missingCharts []upgradecheck.MissingChartError
 	for _, rel := range releases {
 		chartName := rel.ChartName
 		if chartName == "" {
 			chartName = upgradecheck.ChartName(rel.Chart, rel.ChartVersion)
 		}
-		installedChartVer := rel.ChartVersion
-		if installedChartVer == "" {
-			installedChartVer = "Unknown"
-		}
-		installedAppVer := rel.AppVersion
-		if installedAppVer == "" {
-			installedAppVer = "Unknown"
-		}
-		info := searcher.Search(chartName)
-		if debug {
-			// A repo whose index failed to load looks exactly like a repo that
-			// doesn't carry the chart, so report it rather than letting the
-			// release quietly turn up as "chart not found".
-			for _, re := range info.Errors {
-				fmt.Fprintf(os.Stderr, "Debug: repo %s unavailable while searching for chart %s: %v\n", re.Repo, chartName, re.Err)
+		installedChartVer := upgradecheck.DisplayValue(rel.ChartVersion, "Unknown")
+		installedAppVer := upgradecheck.DisplayValue(rel.AppVersion, "Unknown")
+		info, searchErr := searcher.Search(chartName)
+		if searchErr != nil {
+			var chartSearchErr *upgradecheck.ChartSearchError
+			if errors.As(searchErr, &chartSearchErr) && chartSearchErr.FailedRepos == chartSearchErr.TotalRepos && len(repoEntries) > 0 {
+				fmt.Fprintf(os.Stderr, "error searching for chart %q: all configured repositories failed to load their indexes: %v\n", chartName, searchErr)
+				exitFunc(1)
+				return
+			}
+			for _, component := range flattenWarningErrors(searchErr) {
+				addWarning(component.Error())
 			}
 		}
 		if len(info.Versions) == 0 {
-			errors = append(errors, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
+			missingCharts = append(missingCharts, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
 			continue
 		}
 
@@ -146,10 +168,7 @@ func main() {
 		var recommended *repoResult
 		upgradable := false
 		for _, v := range info.Versions {
-			latestChartVer := v.Version
-			if latestChartVer == "" || latestChartVer == "null" {
-				latestChartVer = "N/A"
-			}
+			latestChartVer := upgradecheck.DisplayValue(v.Version, "N/A")
 			// Compare chart versions — this is what helm upgrade --version accepts.
 			chartNewer := upgradecheck.CompareVersions(latestChartVer, installedChartVer, includePrerel)
 			// Guard: if both app versions are valid semver and the candidate's app
@@ -159,10 +178,9 @@ func main() {
 			// to the chart-version decision.
 			appRegresses := upgradecheck.CompareVersions(installedAppVer, v.AppVersion, includePrerel)
 			repoUpgradable := chartNewer && !appRegresses
-			latestAppVer := v.AppVersion
-			if latestAppVer == "" {
-				latestAppVer = "Unknown"
-			}
+			// Normalized the same way as the installed app version so the
+			// noise filter below can match a chart that has none.
+			latestAppVer := upgradecheck.DisplayValue(v.AppVersion, "Unknown")
 			rr := repoResult{
 				Repo:               v.Repo,
 				LatestChartVersion: latestChartVer,
@@ -171,7 +189,7 @@ func main() {
 			}
 			if repoUpgradable {
 				upgradable = true
-				rr.UpgradeCommand = fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", rel.Namespace, rel.Name, v.Repo, chartName, latestChartVer, rel.Name)
+				rr.UpgradeCommand = upgradecheck.UpgradeCommand(rel.Name, rel.Namespace, v.Repo, chartName, latestChartVer)
 			}
 			repos = append(repos, rr)
 		}
@@ -191,11 +209,7 @@ func main() {
 		recommendedRepo := ""
 		if recommended != nil {
 			recommendedRepo = recommended.Repo
-			commands = []string{
-				fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", rel.Namespace, rel.Name, rel.Name),
-				fmt.Sprintf("cat %s.values", rel.Name),
-				recommended.UpgradeCommand,
-			}
+			commands = append(upgradecheck.ValuesCommands(rel.Name, rel.Namespace), recommended.UpgradeCommand)
 		}
 
 		if !upgradable {
@@ -235,7 +249,8 @@ func main() {
 	if jsonOut {
 		out := map[string]interface{}{
 			"results":        results,
-			"missing_charts": errors,
+			"missing_charts": missingCharts,
+			"warnings":       warnings,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -261,20 +276,19 @@ func main() {
 	// were already current.
 	behindPrintf := color.New(color.FgYellow).PrintfFunc()
 	fmt.Println()
-	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Running Version", "Chart Version", "App Version")
-	fmt.Printf(printFormat, "----------", "------------", "---------", "-------", "---------------", "-------------", "-----------")
+	printTableHeader(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Running Version", "Chart Version", "App Version")
 	var upgradableResults []resultItem
 	for _, r := range results {
 		// A chart found in multiple repos gets one line per repo, each showing
 		// that repo's own chart/app version rather than a shared value.
 		for _, rv := range r.Repos {
+			printRow := upToDatePrintf
 			if rv.Upgradable {
-				upgradablePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+				printRow = upgradablePrintf
 			} else if r.Upgradable {
-				behindPrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
-			} else {
-				upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+				printRow = behindPrintf
 			}
+			printRow(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
 		}
 		if r.Upgradable {
 			upgradableResults = append(upgradableResults, r)
@@ -301,19 +315,59 @@ func main() {
 		}
 	}
 
-	if len(errors) > 0 {
+	if len(missingCharts) > 0 {
 		fmt.Println("\n\nUnable to find chart information in any repo for the following releases:")
 		printFormat = "%-20s %-20s %-20s\n"
-		fmt.Printf(printFormat, "Release", "Namespace", "Chart")
-		fmt.Printf(printFormat, "-------", "---------", "-----")
-		for _, e := range errors {
+		printTableHeader(printFormat, "Release", "Namespace", "Chart")
+		for _, e := range missingCharts {
 			fmt.Printf(printFormat, e.Release, e.Namespace, e.Chart)
 		}
 	}
 }
 
+func flattenWarningErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if unwrap, ok := err.(interface{ Unwrap() error }); ok {
+		if joined, ok := unwrap.Unwrap().(joinedError); ok {
+			return flattenJoinedErrors(joined)
+		}
+	}
+	return flattenJoinedErrors(err)
+}
+
+func flattenJoinedErrors(err error) []error {
+	joined, ok := err.(joinedError)
+	if !ok {
+		return []error{err}
+	}
+	var components []error
+	for _, component := range joined.Unwrap() {
+		if _, ok := component.(joinedError); ok {
+			components = append(components, flattenJoinedErrors(component)...)
+			continue
+		}
+		components = append(components, component)
+	}
+	return components
+}
+
 type chartSearcher interface {
-	Search(string) upgradecheck.ChartSearchResult
+	Search(string) (upgradecheck.ChartSearchResult, error)
+}
+
+// printTableHeader writes the column titles followed by a rule of dashes
+// matching each title's width, using the shared row format.
+func printTableHeader(format string, titles ...string) {
+	cells := make([]any, len(titles))
+	rule := make([]any, len(titles))
+	for i, title := range titles {
+		cells[i] = title
+		rule[i] = strings.Repeat("-", len(title))
+	}
+	fmt.Printf(format, cells...)
+	fmt.Printf(format, rule...)
 }
 
 var loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {

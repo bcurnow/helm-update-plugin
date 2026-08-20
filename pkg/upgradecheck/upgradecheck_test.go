@@ -43,3 +43,11 @@ func TestChartName(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingChartError_Error(t *testing.T) {
+	err := MissingChartError{Release: "redis", Namespace: "default", Chart: "redis"}
+
+	if got := err.Error(); got != `release "redis" in namespace "default" uses chart "redis", which was not found in any configured repository` {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
