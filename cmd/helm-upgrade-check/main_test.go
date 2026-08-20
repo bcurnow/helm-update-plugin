@@ -839,6 +839,95 @@ func TestMain_UnknownInstalledVersions(t *testing.T) {
 	}
 }
 
+func TestMain_MultipleUpgradableRepos_OneRecommendedRestAreAlternatives(t *testing.T) {
+	// Two repos offering an upgrade are alternative sources for the same
+	// release, not two steps: the copy-pasteable command block must contain
+	// exactly one live helm upgrade (the highest version on offer), with the
+	// other repo presented as a commented-out alternative.
+	stubPluginFuncs(t,
+		[]upgradecheck.Release{{
+			Name:         "redis",
+			Namespace:    "default",
+			Chart:        "redis-1.0.0",
+			ChartName:    "redis",
+			ChartVersion: "1.0.0",
+			AppVersion:   "7.0.0",
+		}},
+		[]upgradecheck.RepoChartVersion{
+			{Repo: "r1", Version: "2.0.0", AppVersion: "7.2.0"},
+			{Repo: "r2", Version: "3.0.0", AppVersion: "7.4.0"},
+		})
+
+	res := runMainJSONResult(t)
+	if res["recommended_repo"] != "r2" {
+		t.Errorf("recommended_repo: got %v, want r2 (highest chart version)", res["recommended_repo"])
+	}
+	cmds, _ := res["commands"].([]interface{})
+	if len(cmds) != 3 {
+		t.Fatalf("expected exactly 3 commands regardless of how many repos are upgradable, got %d: %v", len(cmds), cmds)
+	}
+	if upgradeCmd, _ := cmds[2].(string); !strings.Contains(upgradeCmd, "r2/redis --version 3.0.0") {
+		t.Errorf("recommended command must use r2's version, got: %s", upgradeCmd)
+	}
+	for _, ri := range res["repos"].([]interface{}) {
+		rm := ri.(map[string]interface{})
+		if rm["upgrade_command"] == nil {
+			t.Errorf("repo %v should carry its own upgrade_command", rm["repo"])
+		}
+	}
+
+	humanOut := runMainCapturingOutput(t, []string{"cmd"})
+	var live, commented int
+	for _, l := range strings.Split(humanOut, "\n") {
+		trimmed := strings.TrimSpace(l)
+		if !strings.HasPrefix(trimmed, "helm upgrade ") && !strings.HasPrefix(trimmed, "# helm upgrade ") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			commented++
+		} else {
+			live++
+		}
+	}
+	if live != 1 {
+		t.Errorf("expected exactly 1 runnable helm upgrade line, got %d:\n%s", live, humanOut)
+	}
+	if commented != 1 {
+		t.Errorf("expected r1 to be offered as 1 commented alternative, got %d:\n%s", commented, humanOut)
+	}
+	if !strings.Contains(humanOut, "do not run both") {
+		t.Error("alternatives must be labelled as mutually exclusive")
+	}
+}
+
+func TestMain_NotUpgradable_DropsNoiseWhenChartHasNoAppVersion(t *testing.T) {
+	// Charts with no appVersion in the index end up comparing "" against the
+	// installed release's normalized "Unknown", which used to make the
+	// stale-repo filter give up and print every repo.
+	stubPluginFuncs(t,
+		[]upgradecheck.Release{{
+			Name:         "infra",
+			Namespace:    "kube-system",
+			Chart:        "infra-2.0.0",
+			ChartName:    "infra",
+			ChartVersion: "2.0.0",
+		}},
+		[]upgradecheck.RepoChartVersion{
+			{Repo: "behind", Version: "1.0.0"},
+			{Repo: "current", Version: "2.0.0"},
+		})
+
+	res := runMainJSONResult(t)
+	repos := resultRepos(t, res, 1)
+	repo0, ok := repos["current"]
+	if !ok {
+		t.Fatalf("expected only the repo corroborating the running version, got %v", res["repos"])
+	}
+	if repo0["latest_app_version"] != "Unknown" {
+		t.Errorf("missing app version should be reported as Unknown, got %v", repo0["latest_app_version"])
+	}
+}
+
 func TestMain_MissingRepoVersionShownAsNA(t *testing.T) {
 	// Index entries can carry an empty or literal "null" version; those are
 	// displayed as N/A and never treated as an upgrade.

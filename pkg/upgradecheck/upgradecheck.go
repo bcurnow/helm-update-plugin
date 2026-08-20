@@ -27,6 +27,7 @@ type Release struct {
 	Name         string // release name
 	Namespace    string // Kubernetes namespace
 	Chart        string // chart name with version, e.g. "redis-14.8.8"
+	ChartName    string // chart name only, e.g. "redis"
 	ChartVersion string // chart version only, e.g. "14.8.8" (authoritative for --version)
 	AppVersion   string // application version of the deployed release
 }
@@ -47,7 +48,14 @@ func (e MissingChartError) Error() string {
 // ChartName strips the version suffix from the string that Helm returns
 // in the `.chart` field of `helm list`.
 // For example, "redis-14.8.8" becomes "redis".
-func ChartName(chart string) string {
+//
+// When the version is known, pass it as version so it can be trimmed exactly.
+// Splitting on the last "-" alone mangles versions carrying pre-release or
+// build metadata: "redis-1.0.0-beta.1" would yield "redis-1.0.0".
+func ChartName(chart, version string) string {
+	if version != "" && strings.HasSuffix(chart, "-"+version) {
+		return strings.TrimSuffix(chart, "-"+version)
+	}
 	if idx := strings.LastIndex(chart, "-"); idx != -1 {
 		return chart[:idx]
 	}
