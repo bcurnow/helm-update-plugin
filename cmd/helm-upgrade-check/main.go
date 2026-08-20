@@ -18,6 +18,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -32,6 +33,11 @@ import (
 
 var exitFunc = os.Exit
 var Version = "dev"
+
+type joinedError interface {
+	error
+	Unwrap() []error
+}
 
 func main() {
 	var debug bool
@@ -57,15 +63,51 @@ func main() {
 		fmt.Printf("Debug: kubeconfig=%s, namespace=%s\n", settings.KubeConfig, settings.Namespace())
 	}
 
-	repoEntries := runStep(jsonOut, "Loading repository list...", "error loading repo entries:", func() ([]*repo.Entry, error) {
-		return loadRepoEntriesFunc(settings)
-	})
+	if !jsonOut {
+		fmt.Print("Loading repository list...")
+	}
+	repoEntries, err := loadRepoEntriesFunc(settings)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error loading repo entries:", err)
+		exitFunc(1)
+		return
+	}
+	if !jsonOut {
+		fmt.Println("done!")
+	}
+	warnings := []string{}
+	seenWarnings := map[string]struct{}{}
+	addWarning := func(message string) {
+		if _, ok := seenWarnings[message]; ok {
+			return
+		}
+		seenWarnings[message] = struct{}{}
+		warnings = append(warnings, message)
+		fmt.Fprintln(os.Stderr, "warning:", message)
+	}
+	if len(repoEntries) == 0 {
+		addWarning("no repositories are configured; every release will be reported as missing")
+	}
 
 	searcher := newChartSearcherFunc(repoEntries, settings.RepositoryCache, includePrerel)
 
-	releases := runStep(jsonOut, "Fetching Helm releases from all namespaces...", "error retrieving releases:", func() ([]upgradecheck.Release, error) {
-		return fetchReleasesFunc(settings, debug)
-	})
+	if !jsonOut {
+		fmt.Print("Fetching Helm releases from all namespaces...")
+	}
+	releases, err := fetchReleasesFunc(settings, debug)
+	if err != nil {
+		if len(releases) == 0 {
+			fmt.Fprintln(os.Stderr, "error retrieving releases:", err)
+			exitFunc(1)
+			return
+		}
+		for _, component := range flattenWarningErrors(err) {
+			addWarning(fmt.Sprintf("release could not be decoded: %v", component))
+		}
+	}
+	if !jsonOut {
+		fmt.Println("done!")
+	}
 
 	// repoResult carries one repo's own version info for a chart, since a
 	// chart mirrored across multiple repos can have a different version (and
@@ -89,14 +131,25 @@ func main() {
 	}
 
 	var results []resultItem
-	var errors []upgradecheck.MissingChartError
+	var missingCharts []upgradecheck.MissingChartError
 	for _, rel := range releases {
 		chartName := upgradecheck.ChartName(rel.Chart)
 		installedChartVer := upgradecheck.DisplayValue(rel.ChartVersion, "Unknown")
 		installedAppVer := upgradecheck.DisplayValue(rel.AppVersion, "Unknown")
-		info := searcher.Search(chartName)
+		info, searchErr := searcher.Search(chartName)
+		if searchErr != nil {
+			var chartSearchErr *upgradecheck.ChartSearchError
+			if errors.As(searchErr, &chartSearchErr) && chartSearchErr.FailedRepos == chartSearchErr.TotalRepos && len(repoEntries) > 0 {
+				fmt.Fprintf(os.Stderr, "error searching for chart %q: all configured repositories failed to load their indexes: %v\n", chartName, searchErr)
+				exitFunc(1)
+				return
+			}
+			for _, component := range flattenWarningErrors(searchErr) {
+				addWarning(component.Error())
+			}
+		}
 		if len(info.Versions) == 0 {
-			errors = append(errors, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
+			missingCharts = append(missingCharts, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
 			continue
 		}
 
@@ -162,13 +215,15 @@ func main() {
 	if jsonOut {
 		out := map[string]interface{}{
 			"results":        results,
-			"missing_charts": errors,
+			"missing_charts": missingCharts,
+			"warnings":       warnings,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(out); err != nil {
 			fmt.Fprintln(os.Stderr, "error encoding JSON output:", err)
-			os.Exit(1)
+			exitFunc(1)
+			return
 		}
 		return
 	}
@@ -211,36 +266,46 @@ func main() {
 		}
 	}
 
-	if len(errors) > 0 {
+	if len(missingCharts) > 0 {
 		fmt.Println("\n\nUnable to find chart information in any repo for the following releases:")
 		printFormat = "%-20s %-20s %-20s\n"
 		printTableHeader(printFormat, "Release", "Namespace", "Chart")
-		for _, e := range errors {
+		for _, e := range missingCharts {
 			fmt.Printf(printFormat, e.Release, e.Namespace, e.Chart)
 		}
 	}
 }
 
-type chartSearcher interface {
-	Search(string) upgradecheck.ChartSearchResult
+func flattenWarningErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if unwrap, ok := err.(interface{ Unwrap() error }); ok {
+		if joined, ok := unwrap.Unwrap().(joinedError); ok {
+			return flattenJoinedErrors(joined)
+		}
+	}
+	return flattenJoinedErrors(err)
 }
 
-// runStep performs one of the startup steps that load data before the check
-// itself, reporting progress around it unless quiet (JSON output must stay
-// machine-readable) and exiting on failure.
-func runStep[T any](quiet bool, msg, errPrefix string, fn func() (T, error)) T {
-	if !quiet {
-		fmt.Print(msg)
+func flattenJoinedErrors(err error) []error {
+	joined, ok := err.(joinedError)
+	if !ok {
+		return []error{err}
 	}
-	value, err := fn()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, errPrefix, err)
-		exitFunc(1)
+	var components []error
+	for _, component := range joined.Unwrap() {
+		if _, ok := component.(joinedError); ok {
+			components = append(components, flattenJoinedErrors(component)...)
+			continue
+		}
+		components = append(components, component)
 	}
-	if !quiet {
-		fmt.Println("done!")
-	}
-	return value
+	return components
+}
+
+type chartSearcher interface {
+	Search(string) (upgradecheck.ChartSearchResult, error)
 }
 
 // printTableHeader writes the column titles followed by a rule of dashes

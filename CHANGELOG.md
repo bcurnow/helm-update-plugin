@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Silently dropped repository index failures** — repository cache, parsing, and OCI lookup errors are now surfaced instead of making charts appear absent.
+- **Silently dropped undecodable releases** — release conversion failures are returned alongside successfully decoded releases so they remain visible to the caller.
+- **Swallowed OCI accessor errors** — failures to access metadata from a loaded OCI chart are now propagated.
+
+### Changed
+
+- **Warnings are reported on stderr and in JSON** — non-fatal search and release conversion problems produce deduplicated `warning:` lines and are included in the top-level JSON `warnings` array.
+- **All-repositories-failed searches are fatal** — the plugin exits with status 1 when every configured repository index fails to load because no comparison is possible.
+- **Error-handling API changes** — `ChartSearcher.Search` and `PrintUpgradeCommands` now return errors, and `MissingChartError` now implements the `error` interface.
+
 ## [2.1.0] - 2026-08-19
 
 ### Fixed

@@ -158,6 +158,8 @@ Use `--json` / `-j` for machine-readable output. Each result includes:
 
 Each entry in `repos` carries that repo's own `latest_chart_version` / `latest_app_version` / `upgradable` — a chart found in multiple repos can have a different version (and upgrade verdict) per repo. The top-level `upgradable` is `true` if any repo offers a valid upgrade.
 
+The top-level JSON object contains `results`, `missing_charts`, and a `warnings` array. Warning details are also printed to stderr; stdout remains valid JSON for machine-readable consumers.
+
 ### Error Handling
 
 If a release was installed from a chart that is no longer in any configured repository, the plugin reports it in a separate section at the end:
@@ -171,6 +173,8 @@ custom-app       production     my-custom-chart
 ```
 
 This is normal for charts installed directly from a local path or a repo that has since been removed.
+
+Other problems are non-fatal: unreadable repository indexes, chart entries with invalid versions, and releases that cannot be decoded are reported as `warning:` lines on stderr, and the audit continues with the data it could load. If every configured repository fails to load its index, no comparison is possible and the plugin exits with status 1.
 
 ## Configuration
 
