@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"helm-upgrade-check-plugin/pkg/upgradecheck"
 
@@ -133,14 +134,8 @@ func main() {
 	var missingCharts []upgradecheck.MissingChartError
 	for _, rel := range releases {
 		chartName := upgradecheck.ChartName(rel.Chart)
-		installedChartVer := rel.ChartVersion
-		if installedChartVer == "" {
-			installedChartVer = "Unknown"
-		}
-		installedAppVer := rel.AppVersion
-		if installedAppVer == "" {
-			installedAppVer = "Unknown"
-		}
+		installedChartVer := upgradecheck.DisplayValue(rel.ChartVersion, "Unknown")
+		installedAppVer := upgradecheck.DisplayValue(rel.AppVersion, "Unknown")
 		info, searchErr := searcher.Search(chartName)
 		if searchErr != nil {
 			var chartSearchErr *upgradecheck.ChartSearchError
@@ -162,10 +157,7 @@ func main() {
 		var commands []string
 		upgradable := false
 		for _, v := range info.Versions {
-			latestChartVer := v.Version
-			if latestChartVer == "" || latestChartVer == "null" {
-				latestChartVer = "N/A"
-			}
+			latestChartVer := upgradecheck.DisplayValue(v.Version, "N/A")
 			// Compare chart versions — this is what helm upgrade --version accepts.
 			chartNewer := upgradecheck.CompareVersions(latestChartVer, installedChartVer, includePrerel)
 			// Guard: if both app versions are valid semver and the candidate's app
@@ -184,12 +176,9 @@ func main() {
 			if repoUpgradable {
 				upgradable = true
 				if len(commands) == 0 {
-					commands = append(commands,
-						fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", rel.Namespace, rel.Name, rel.Name),
-						fmt.Sprintf("cat %s.values", rel.Name),
-					)
+					commands = append(commands, upgradecheck.ValuesCommands(rel.Name, rel.Namespace)...)
 				}
-				commands = append(commands, fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", rel.Namespace, rel.Name, v.Repo, chartName, latestChartVer, rel.Name))
+				commands = append(commands, upgradecheck.UpgradeCommand(rel.Name, rel.Namespace, v.Repo, chartName, latestChartVer))
 			}
 		}
 
@@ -249,18 +238,17 @@ func main() {
 	upToDatePrintf := color.New(color.FgGreen).PrintfFunc()
 	upgradablePrintf := color.New(color.FgBlue).PrintfFunc()
 	fmt.Println()
-	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Running Version", "Chart Version", "App Version")
-	fmt.Printf(printFormat, "----------", "------------", "---------", "-------", "---------------", "-------------", "-----------")
+	printTableHeader(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Running Version", "Chart Version", "App Version")
 	var upgradableResults []resultItem
 	for _, r := range results {
 		// A chart found in multiple repos gets one line per repo, each showing
 		// that repo's own chart/app version rather than a shared value.
 		for _, rv := range r.Repos {
+			printRow := upToDatePrintf
 			if rv.Upgradable {
-				upgradablePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
-			} else {
-				upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+				printRow = upgradablePrintf
 			}
+			printRow(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
 		}
 		if r.Upgradable {
 			upgradableResults = append(upgradableResults, r)
@@ -281,8 +269,7 @@ func main() {
 	if len(missingCharts) > 0 {
 		fmt.Println("\n\nUnable to find chart information in any repo for the following releases:")
 		printFormat = "%-20s %-20s %-20s\n"
-		fmt.Printf(printFormat, "Release", "Namespace", "Chart")
-		fmt.Printf(printFormat, "-------", "---------", "-----")
+		printTableHeader(printFormat, "Release", "Namespace", "Chart")
 		for _, e := range missingCharts {
 			fmt.Printf(printFormat, e.Release, e.Namespace, e.Chart)
 		}
@@ -319,6 +306,19 @@ func flattenJoinedErrors(err error) []error {
 
 type chartSearcher interface {
 	Search(string) (upgradecheck.ChartSearchResult, error)
+}
+
+// printTableHeader writes the column titles followed by a rule of dashes
+// matching each title's width, using the shared row format.
+func printTableHeader(format string, titles ...string) {
+	cells := make([]any, len(titles))
+	rule := make([]any, len(titles))
+	for i, title := range titles {
+		cells[i] = title
+		rule[i] = strings.Repeat("-", len(title))
+	}
+	fmt.Printf(format, cells...)
+	fmt.Printf(format, rule...)
 }
 
 var loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {

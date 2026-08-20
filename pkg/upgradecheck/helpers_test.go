@@ -272,6 +272,23 @@ func TestPrintUpgradeCommands(t *testing.T) {
 	assert.Contains(t, out, "helm upgrade --namespace ns rel repo1/chart --version 1.2.3")
 }
 
+func TestUpgradeCommands(t *testing.T) {
+	cmds := UpgradeCommands("rel", "ns", "repo1", "chart", "1.2.3")
+	assert.Equal(t, []string{
+		"helm get values --namespace ns rel -o yaml > rel.values",
+		"cat rel.values",
+		"helm upgrade --namespace ns rel repo1/chart --version 1.2.3 --values rel.values",
+	}, cmds)
+	assert.Equal(t, cmds[:2], ValuesCommands("rel", "ns"))
+	assert.Equal(t, cmds[2], UpgradeCommand("rel", "ns", "repo1", "chart", "1.2.3"))
+}
+
+func TestDisplayValue(t *testing.T) {
+	assert.Equal(t, "1.2.3", DisplayValue("1.2.3", "N/A"))
+	assert.Equal(t, "N/A", DisplayValue("", "N/A"))
+	assert.Equal(t, "N/A", DisplayValue("null", "N/A"))
+}
+
 func TestConvertReleaseList(t *testing.T) {
 	helmRel := &releasev1.Release{
 		Name:      "r",
@@ -426,7 +443,8 @@ func TestChartSearcher_Search_SkipsUnusableIndexEntries(t *testing.T) {
 		},
 	}
 
-	res := s.Search("demo")
+	res, err := s.Search("demo")
+	assert.Error(t, err)
 	assert.Equal(t, "1.2.3", res.Version)
 	assert.Equal(t, "4.5.6", res.AppVersion)
 }
@@ -441,7 +459,8 @@ func TestChartSearcher_Search_IgnoresReposWhoseIndexFailsToLoad(t *testing.T) {
 	}
 
 	s := NewChartSearcher([]*repo.Entry{{Name: "missing"}, {Name: "good"}}, cacheDir, false)
-	res := s.Search("demo")
+	res, err := s.Search("demo")
+	assert.Error(t, err)
 	assert.Equal(t, []string{"good"}, res.Repos)
 	assert.Equal(t, "1.0.0", res.Version)
 }
@@ -652,14 +671,17 @@ func TestConvertReleaseList_SkipsReleasesWithoutAnAccessor(t *testing.T) {
 		Chart:     &chartv2.Chart{Metadata: &chartv2.Metadata{Name: "ok", Version: "1.0.0", AppVersion: "1.0.0"}},
 	}
 
-	out := convertReleaseList([]release.Releaser{&unsupportedReleaser{}, helmRel})
+	out, err := convertReleaseList([]release.Releaser{&unsupportedReleaser{}, helmRel})
+	assert.Error(t, err)
 	if assert.Len(t, out, 1) {
 		assert.Equal(t, "ok", out[0].Name)
 	}
 }
 
 func TestConvertReleaseList_Empty(t *testing.T) {
-	assert.Empty(t, convertReleaseList(nil))
+	out, err := convertReleaseList(nil)
+	assert.NoError(t, err)
+	assert.Empty(t, out)
 }
 
 // fakeAPIServer starts an HTTP server that impersonates just enough of the
