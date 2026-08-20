@@ -789,3 +789,171 @@ func TestMain_NotUpgradable_NoRepoMatchesRunning_KeepsAllEntries(t *testing.T) {
 		t.Fatalf("expected both repos kept as a fallback since neither matches running, got %v", res["repos"])
 	}
 }
+
+// stubMainFuncs points main's injectable dependencies at a single release and
+// a fake searcher result, restoring the originals when the test ends.
+func stubMainFuncs(t *testing.T, rel upgradecheck.Release, res upgradecheck.ChartSearchResult) {
+	t.Helper()
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	t.Cleanup(func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	})
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{rel}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
+		return &fakeSearcher{res: res}
+	}
+}
+
+func TestMain_MultipleUpgradableRepos_OneRecommendedRestAreAlternatives(t *testing.T) {
+	// Two repos offering an upgrade are alternative sources for the same
+	// release, not two steps: the copy-pasteable command block must contain
+	// exactly one live helm upgrade (the highest version on offer), with the
+	// other repo presented as a commented-out alternative.
+	stubMainFuncs(t,
+		upgradecheck.Release{
+			Name:         "redis",
+			Namespace:    "default",
+			Chart:        "redis-1.0.0",
+			ChartName:    "redis",
+			ChartVersion: "1.0.0",
+			AppVersion:   "7.0.0",
+		},
+		upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{
+				{Repo: "r1", Version: "2.0.0", AppVersion: "7.2.0"},
+				{Repo: "r2", Version: "3.0.0", AppVersion: "7.4.0"},
+			},
+		})
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	if res["recommended_repo"] != "r2" {
+		t.Errorf("recommended_repo: got %v, want r2 (highest chart version)", res["recommended_repo"])
+	}
+	cmds, _ := res["commands"].([]interface{})
+	if len(cmds) != 3 {
+		t.Fatalf("expected exactly 3 commands regardless of how many repos are upgradable, got %d: %v", len(cmds), cmds)
+	}
+	if upgradeCmd, _ := cmds[2].(string); !strings.Contains(upgradeCmd, "r2/redis --version 3.0.0") {
+		t.Errorf("recommended command must use r2's version, got: %s", upgradeCmd)
+	}
+	for _, ri := range res["repos"].([]interface{}) {
+		rm := ri.(map[string]interface{})
+		if rm["upgrade_command"] == nil {
+			t.Errorf("repo %v should carry its own upgrade_command", rm["repo"])
+		}
+	}
+
+	humanOut := runMainCapturingOutput(t, []string{"cmd"})
+	var live, commented int
+	for _, l := range strings.Split(humanOut, "\n") {
+		trimmed := strings.TrimSpace(l)
+		if !strings.HasPrefix(trimmed, "helm upgrade ") && !strings.HasPrefix(trimmed, "# helm upgrade ") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			commented++
+		} else {
+			live++
+		}
+	}
+	if live != 1 {
+		t.Errorf("expected exactly 1 runnable helm upgrade line, got %d:\n%s", live, humanOut)
+	}
+	if commented != 1 {
+		t.Errorf("expected r1 to be offered as 1 commented alternative, got %d:\n%s", commented, humanOut)
+	}
+	if !strings.Contains(humanOut, "do not run both") {
+		t.Error("alternatives must be labelled as mutually exclusive")
+	}
+}
+
+func TestMain_NotUpgradable_DropsNoiseWhenChartHasNoAppVersion(t *testing.T) {
+	// Charts with no appVersion in the index end up comparing "" against the
+	// installed release's normalized "Unknown", which used to make the
+	// stale-repo filter give up and print every repo.
+	stubMainFuncs(t,
+		upgradecheck.Release{
+			Name:         "infra",
+			Namespace:    "kube-system",
+			Chart:        "infra-2.0.0",
+			ChartName:    "infra",
+			ChartVersion: "2.0.0",
+		},
+		upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{
+				{Repo: "behind", Version: "1.0.0"},
+				{Repo: "current", Version: "2.0.0"},
+			},
+		})
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	repos, _ := res["repos"].([]interface{})
+	if len(repos) != 1 {
+		t.Fatalf("expected only the repo corroborating the running version, got %v", res["repos"])
+	}
+	repo0 := repos[0].(map[string]interface{})
+	if repo0["repo"] != "current" {
+		t.Errorf("surviving repo: got %v, want current", repo0["repo"])
+	}
+	if repo0["latest_app_version"] != "Unknown" {
+		t.Errorf("missing app version should be reported as Unknown, got %v", repo0["latest_app_version"])
+	}
+}
+
+func TestMain_Debug_ReportsUnavailableRepos(t *testing.T) {
+	// A repo whose index fails to load is otherwise indistinguishable from a
+	// repo that simply doesn't carry the chart.
+	stubMainFuncs(t,
+		upgradecheck.Release{
+			Name:         "redis",
+			Namespace:    "default",
+			Chart:        "redis-1.0.0",
+			ChartName:    "redis",
+			ChartVersion: "1.0.0",
+			AppVersion:   "7.0.0",
+		},
+		upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{
+				{Repo: "r1", Version: "1.0.0", AppVersion: "7.0.0"},
+			},
+			Errors: []upgradecheck.RepoError{
+				{Repo: "broken", Err: fmt.Errorf("open index.yaml: no such file")},
+			},
+		})
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
+	_ = runMainCapturingOutput(t, []string{"cmd", "--debug"})
+	_ = w.Close()
+	os.Stderr = oldStderr
+	stderr, _ := io.ReadAll(r)
+
+	if !strings.Contains(string(stderr), "repo broken unavailable") {
+		t.Errorf("expected the failed repo to be reported under --debug, got: %q", stderr)
+	}
+}

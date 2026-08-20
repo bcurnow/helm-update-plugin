@@ -38,12 +38,13 @@ import (
 	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
 
-// CompareVersions returns true if v1 > v2 using a simple semver comparison.
-// It strips any leading "v" prefixes and compares numeric components left to
-// right.  When the initial segments are equal, the longer version string is
-// considered greater (e.g. "1.2.0" > "1.2").
-// If includePrerel is true, then the comparison will consider pre-release versions
-// pre-release versions with a higher major.minor.patch will be considered greater than stable versions with a lower major.minor.patch
+// CompareVersions returns true if v1 > v2 according to semver, after stripping
+// any leading "v" prefix.  Either version failing to parse as semver yields
+// false, so an unparseable version is never treated as an upgrade.
+// If includePrerel is true, a pre-release version with a higher
+// major.minor.patch is considered greater than a stable version with a lower
+// major.minor.patch; if it is false, a pre-release is never greater than a
+// stable version.
 func CompareVersions(v1, v2 string, includePrerel bool) bool {
 	v1 = strings.TrimPrefix(v1, "v")
 	v2 = strings.TrimPrefix(v2, "v")
@@ -66,8 +67,6 @@ func CompareVersions(v1, v2 string, includePrerel bool) bool {
 			return false
 		}
 	}
-
-	// At this point, there are two possible scenarios:
 
 	return sv1.GreaterThan(sv2)
 }
@@ -107,6 +106,18 @@ type ChartSearchResult struct {
 	Version    string // highest chart version across all repos
 	AppVersion string // app version paired with the highest chart version
 	Versions   []RepoChartVersion
+	// Errors holds one entry per repository whose index could not be loaded.
+	// Without these, a repo that failed to load is indistinguishable from a
+	// repo that simply doesn't carry the chart.
+	Errors []RepoError
+}
+
+// RepoError records a repository index that could not be loaded during a
+// search, so the caller can tell "repo unavailable" apart from "chart not in
+// this repo".
+type RepoError struct {
+	Repo string
+	Err  error
 }
 
 // ChartSearcher performs on-demand lookups of repository indexes to resolve
@@ -143,6 +154,10 @@ func NewChartSearcher(repos []*repo.Entry, cacheDir string, includePrerel bool) 
 // Search returns a ChartSearchResult for chartName.  If the result was
 // previously computed, it is returned from the cache; otherwise the method
 // scans each repository index and updates the cache.
+//
+// Search is not safe for concurrent use: it fans out across repositories
+// internally, but resultMap is unsynchronized, so callers must invoke it from
+// a single goroutine.
 func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 	if r, ok := s.resultMap[chartName]; ok {
 		return r
@@ -152,6 +167,7 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 		repo       string
 		version    string // chart version (authoritative)
 		appVersion string // app version for display
+		err        error  // index could not be loaded for this repo
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -175,6 +191,7 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 
 			idx, err := s.loadIndex(entry)
 			if err != nil {
+				ch <- result{repo: entry.Name, err: err}
 				return
 			}
 			if versions, ok := idx.Entries[chartName]; ok {
@@ -209,8 +226,13 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 	}()
 
 	var versions []RepoChartVersion
+	var repoErrors []RepoError
 	var latestChartVer, latestAppVer string
 	for r := range ch {
+		if r.err != nil {
+			repoErrors = append(repoErrors, RepoError{Repo: r.repo, Err: r.err})
+			continue
+		}
 		versions = append(versions, RepoChartVersion{Repo: r.repo, Version: r.version, AppVersion: r.appVersion})
 		if latestChartVer == "" || CompareVersions(r.version, latestChartVer, s.includePrerel) {
 			latestChartVer = r.version
@@ -222,7 +244,7 @@ func (s *ChartSearcher) Search(chartName string) ChartSearchResult {
 		reposFound[i] = v.Repo
 	}
 
-	res := ChartSearchResult{Repos: reposFound, Version: latestChartVer, AppVersion: latestAppVer, Versions: versions}
+	res := ChartSearchResult{Repos: reposFound, Version: latestChartVer, AppVersion: latestAppVer, Versions: versions, Errors: repoErrors}
 	s.resultMap[chartName] = res
 	return res
 }
@@ -359,6 +381,7 @@ func convertReleaseList(list []release.Releaser) []Release {
 			Name:         ra.Name(),
 			Namespace:    ra.Namespace(),
 			Chart:        chartName + "-" + version,
+			ChartName:    chartName,
 			ChartVersion: version,
 			AppVersion:   appVersion,
 		})

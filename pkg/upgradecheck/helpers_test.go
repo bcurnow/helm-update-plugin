@@ -163,6 +163,12 @@ func TestChartSearcher_NoChart(t *testing.T) {
 	r := s.Search("nonexistent")
 	assert.Empty(t, r.Repos)
 	assert.Equal(t, "", r.Version)
+	// The index for "empty" doesn't exist, which must be reported rather than
+	// looking like a repo that simply lacks the chart.
+	if assert.Len(t, r.Errors, 1) {
+		assert.Equal(t, "empty", r.Errors[0].Repo)
+		assert.Error(t, r.Errors[0].Err)
+	}
 }
 
 // fakeOCI is a minimal implementation of the ociClient interface used in

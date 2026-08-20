@@ -21,15 +21,25 @@ import (
 )
 
 func TestChartName(t *testing.T) {
-	cases := map[string]string{
-		"redis-14.8.8":     "redis",
-		"nginx-1.2.3":      "nginx",
-		"simple":           "simple",
-		"complex-name-0.1": "complex-name",
+	cases := []struct {
+		chart, version, want string
+	}{
+		{"redis-14.8.8", "14.8.8", "redis"},
+		{"nginx-1.2.3", "1.2.3", "nginx"},
+		{"simple", "", "simple"},
+		{"complex-name-0.1", "0.1", "complex-name"},
+		// Versions carrying pre-release or build metadata contain "-", so
+		// splitting on the last "-" is not enough.
+		{"redis-1.0.0-beta.1", "1.0.0-beta.1", "redis"},
+		{"my-chart-2.3.4-rc.1+build.5", "2.3.4-rc.1+build.5", "my-chart"},
+		// Version unknown: fall back to splitting on the last "-".
+		{"redis-14.8.8", "", "redis"},
+		// Version that doesn't match the suffix is ignored.
+		{"redis-14.8.8", "9.9.9", "redis"},
 	}
-	for in, want := range cases {
-		if got := ChartName(in); got != want {
-			t.Errorf("ChartName(%q)=%q, want %q", in, got, want)
+	for _, c := range cases {
+		if got := ChartName(c.chart, c.version); got != c.want {
+			t.Errorf("ChartName(%q, %q)=%q, want %q", c.chart, c.version, got, c.want)
 		}
 	}
 }

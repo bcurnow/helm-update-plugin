@@ -7,10 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.1.0] - 2026-08-19
+## [3.0.0] - 2026-08-19
+
+Released as 2.1.0 by mistake; the JSON output and flag changes below are breaking, so the release was retagged 3.0.0. If you installed 2.1.0, reinstall to pick up 3.0.0 — the two are the same feature set plus the fixes listed here.
+
+### Breaking Changes
+
+- **JSON output: top-level `latest_chart_version` / `latest_app_version` removed.** A chart found in several repos has a different latest version per repo, so a single top-level value had to pick a winner and misattribute it. Read the per-repo values under `repos[]` instead. Consumers doing `.latest_chart_version` must become `.repos[] | .latest_chart_version` (or `.repos[] | select(.repo == "<repo>")` for a specific repo).
+- **JSON output: `repos` changed from a string array to an object array.** It was `["grafana", "grafana-community"]`; it is now `[{"repo": ..., "latest_chart_version": ..., "latest_app_version": ..., "upgradable": ..., "upgrade_command": ...}]`. Consumers reading `.repos[]` as strings must use `.repos[].repo`.
+- **JSON output: `commands` now contains exactly one `helm upgrade`.** Previously it held one upgrade per upgradable repo, which read as a sequence to run but was really a set of mutually exclusive alternatives. The recommended repo (highest upgradable chart version) is named in the new `recommended_repo` field, and each alternative's command is available as `repos[].upgrade_command`.
+- **`--update` / `-u` flag removed.** The plugin now reads the local Helm repository cache and never refreshes it itself. Run `helm repo update` first, exactly as you would before `helm search repo`; any script passing `--update` must drop the flag and add that step. A stale cache now means stale results rather than a silent network fetch.
+- **Bitnami is no longer special-cased.** It was previously excluded from version selection when a chart also existed in another repo, so output that used to show one repo may now show Bitnami as an additional row and, if its chart version is higher, as the recommended repo.
+- **Requires Helm 4** (unchanged since 2.0.0, restated because 3.0.0 is the first release most 1.x users will jump to).
 
 ### Fixed
 
+- **Chart names with pre-release or build-metadata versions were truncated.** `ChartName` split on the last `-` in `<name>-<version>`, so a release of `redis-1.0.0-beta.1` was searched for as chart `redis-1.0.0` and reported as "not found in any repo". The release's own chart version is now used to strip the suffix, and the chart name from the release metadata is preferred over re-deriving it at all.
+- **Noise filter dropped every repo for charts without an app version.** Non-upgradable releases keep only repos matching the running version, but an index entry with no `appVersion` yields `""` while the installed side is rendered as `"Unknown"`, so the comparison never matched and the plugin fell back to showing all repos. Empty app versions are now normalized before comparison.
+- **Unreadable repository indexes were indistinguishable from repos that simply lack the chart.** A missing or corrupt `<repo>-index.yaml` was silently skipped, so a chart could be reported as available in one repo when a second repo was merely unreadable. Load failures are now collected per repo and reported to stderr under `--debug`.
+- **Multiple upgradable repos printed as a runnable command sequence.** Alternatives are now printed commented out and labelled `# alternative: <repo> offers <version> instead (pick one, do not run both)`, so the whole block is safe to paste.
+- **A repo lagging behind another repo's upgrade was colored green ("up to date").** Such rows are now yellow; green means nothing newer exists for that release anywhere.
 - **Data race in concurrent repository index loading** — `ChartSearcher.loadIndex` is called from one goroutine per repo, but the `idxCache` map it read from and wrote to had no synchronization. Go maps are not safe for concurrent access even across distinct keys, so this could corrupt results whenever a chart existed in multiple repos — e.g. `grafana` and `grafana-community` both reporting the same (wrong) chart/app version instead of their own. `idxCache` is now guarded by a mutex. Confirmed with `go test -race` before and after the fix.
 - **Human-readable table showed the installed version instead of each repo's own version** for "up to date" (green) rows. Once the data race above was fixed, the JSON output was already correct per-repo, but the table's non-upgradable branch still printed `r.InstalledChartVersion`/`r.InstalledAppVersion` for every repo row, so e.g. `grafana` and `grafana-community` both displayed the same version even though `grafana`'s own latest (`10.5.15`) genuinely lagged behind what was installed (`12.11.0`, from `grafana-community`).
 
@@ -199,7 +215,7 @@ R = number of installed releases
 - [ ] Incremental repository checks
 - [ ] Configuration file support (~/.helm/upgrade-check.yaml)
 
-### [2.0.0] (Planned - Major Changes)
+### [4.0.0] (Planned - Major Changes)
 
 - [ ] Helm operator integration
 - [ ] Custom comparison strategies
@@ -238,7 +254,9 @@ R = number of installed releases
 | 1.0.0 | 2024-01-15 | Go plugin, Helm SDK, optimizations, docs | Released |
 | 1.0.1 | 2026-03-05 | Repository rename and reference updates | Released |
 | 1.0.2 | 2026-06-05 | Chart/app version accuracy, output improvements, Makefile CI targets | Released |
-| 1.0.3 | 2026-06-14 | Fix pre-release masking stable upgrades; red/blue upgrade color scheme | **Current** |
+| 1.0.3 | 2026-06-14 | Fix pre-release masking stable upgrades; red/blue upgrade color scheme | Released |
+| 2.0.0 | 2026-06-14 | Helm 4 SDK and `cli/v1` plugin manifest | Released |
+| 3.0.0 | 2026-08-19 | Per-repo chart versions, local cache reads, single recommended upgrade command | **Current** |
 
 ## Upgrade Instructions
 
@@ -249,13 +267,23 @@ R = number of installed releases
 3. No configuration changes needed; YAML format compatible
 4. Verify: `helm upgrade-check` should display results
 
-### Within 1.x Releases
+### From 1.x
+
+1. Upgrade to Helm 4 — the 2.0.0 plugin manifest cannot be installed under Helm 3
+2. Reinstall the plugin using the same installation method
+
+### From 2.x (including the mistagged 2.1.0)
+
+1. Reinstall the plugin using the same installation method
+2. Run `helm repo update` before `helm upgrade-check`, and drop `--update` / `-u` from any scripts
+3. Update `--json` consumers for the per-repo output shape — see Breaking Changes under 3.0.0
+
+### Within a Major Series
 
 Simply reinstall/upgrade using the same installation method.
 
 ## Notes
 
-- All changes maintain backward compatibility within the 1.x series
-- Version 2.0.0 (when released) may introduce breaking changes
+- Backward compatibility is maintained within a major series; breaking changes land in major releases
 - Check [Releases](https://github.com/.../releases) page for binary downloads
 - Submit issues and feature requests via GitHub Issues
