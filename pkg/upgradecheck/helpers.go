@@ -458,7 +458,7 @@ func isNilChart(ch chart.Charter) bool {
 		return true
 	}
 	value := reflect.ValueOf(ch)
-	return value.Kind() == reflect.Ptr && value.IsNil()
+	return value.Kind() == reflect.Pointer && value.IsNil()
 }
 
 // FetchReleases retrieves all Helm releases across every namespace.  The
