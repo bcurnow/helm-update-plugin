@@ -47,31 +47,48 @@ import (
 // If includePrerel is true, then the comparison will consider pre-release versions
 // pre-release versions with a higher major.minor.patch will be considered greater than stable versions with a lower major.minor.patch
 func CompareVersions(v1, v2 string, includePrerel bool) bool {
-	v1 = strings.TrimPrefix(v1, "v")
-	v2 = strings.TrimPrefix(v2, "v")
-
 	// Parse the versions, if either is fails (is not a semver), return false to avoid false positives.
 	// This means that if a chart has an invalid version, we won't consider it upgradable, which is a safer failure mode than the opposite.
-	sv1, err := semver.NewVersion(v1)
+	sv1, err := parseVersion(v1)
 	if err != nil {
 		return false
 	}
-	sv2, err := semver.NewVersion(v2)
+	sv2, err := parseVersion(v2)
 	if err != nil {
 		return false
 	}
 
 	// If pre-releases are not included then any pre-release version is never greater than any stable
-	if !includePrerel && sv1.Prerelease() != "" {
-		if sv2.Prerelease() == "" {
-			// sv2 is a stable version, pre-release are not considered greater than stables, so return false
-			return false
-		}
+	if excludedPrerelease(sv1, includePrerel) && sv2.Prerelease() == "" {
+		// sv2 is a stable version, pre-release are not considered greater than stables, so return false
+		return false
 	}
 
 	// At this point, there are two possible scenarios:
 
 	return sv1.GreaterThan(sv2)
+}
+
+// parseVersion parses v as a semantic version, tolerating the leading "v"
+// prefix that chart and app versions frequently carry.
+func parseVersion(v string) (*semver.Version, error) {
+	return semver.NewVersion(strings.TrimPrefix(v, "v"))
+}
+
+// excludedPrerelease reports whether sv must be ignored because it is a
+// pre-release and pre-releases were not requested.
+func excludedPrerelease(sv *semver.Version, includePrerel bool) bool {
+	return !includePrerel && sv.Prerelease() != ""
+}
+
+// DisplayValue returns value for display, substituting fallback when the
+// value is absent — either empty or the literal "null" that repository
+// indexes and release metadata can carry for a missing version.
+func DisplayValue(value, fallback string) string {
+	if value == "" || value == "null" {
+		return fallback
+	}
+	return value
 }
 
 // LoadRepoEntries reads the Helm repository YAML file specified by the
@@ -216,12 +233,12 @@ func (s *ChartSearcher) Search(chartName string) (ChartSearchResult, error) {
 						entryErrs = append(entryErrs, fmt.Errorf("chart %q has an entry without metadata", chartName))
 						continue
 					}
-					sv, err := semver.NewVersion(strings.TrimPrefix(v.Version, "v"))
+					sv, err := parseVersion(v.Version)
 					if err != nil {
 						entryErrs = append(entryErrs, fmt.Errorf("chart %q has invalid version %q: %w", chartName, v.Version, err))
 						continue
 					}
-					if !s.includePrerel && sv.Prerelease() != "" {
+					if excludedPrerelease(sv, s.includePrerel) {
 						continue
 					}
 					cv = v.Version
@@ -397,18 +414,69 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 	return idx, nil
 }
 
+// ValuesCommands returns the commands that save a release's current values to
+// a file and display them for review, which precede any upgrade command.
+func ValuesCommands(release, namespace string) []string {
+	return []string{
+		fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", namespace, release, release),
+		fmt.Sprintf("cat %s.values", release),
+	}
+}
+
+// UpgradeCommand returns the helm command that upgrades a release to version
+// of chartName as published by repoName.  version is always a chart version,
+// which is what `helm upgrade --version` accepts.
+func UpgradeCommand(release, namespace, repoName, chartName, version string) string {
+	return fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", namespace, release, repoName, chartName, version, release)
+}
+
+// UpgradeCommands returns the full series of helm commands required to
+// inspect and upgrade a release.
+func UpgradeCommands(release, namespace, repoName, chartName, version string) []string {
+	return append(ValuesCommands(release, namespace), UpgradeCommand(release, namespace, repoName, chartName, version))
+}
+
 // PrintUpgradeCommands writes the series of helm commands required to inspect
 // and upgrade a release to the supplied writer.  The commands are prefixed by
 // two spaces to visually nest them beneath the release row in the output.
 func PrintUpgradeCommands(w io.Writer, release, namespace, repos, chartName, version string) error {
-	if _, err := fmt.Fprintf(w, "  helm get values --namespace %s %s -o yaml > %s.values\n", namespace, release, release); err != nil {
-		return err
+	for _, cmd := range UpgradeCommands(release, namespace, repos, chartName, version) {
+		if _, err := fmt.Fprintf(w, "  %s\n", cmd); err != nil {
+			return err
+		}
 	}
-	if _, err := fmt.Fprintf(w, "  cat %s.values\n", release); err != nil {
-		return err
+	return nil
+}
+
+// releaseInfo converts a single Helm SDK release into the simplified Release
+// type used by the rest of the plugin.  The index is only used to identify the
+// release in errors raised before its name is known.
+func releaseInfo(index int, rel release.Releaser) (Release, error) {
+	ra, err := release.NewAccessor(rel)
+	if err != nil {
+		return Release{}, fmt.Errorf("failed to decode release at index %d: %w", index, err)
 	}
-	_, err := fmt.Fprintf(w, "  helm upgrade --namespace %s %s %s/%s --version %s --values %s.values\n", namespace, release, repos, chartName, version, release)
-	return err
+	chartValue := ra.Chart()
+	if isNilChart(chartValue) {
+		return Release{}, fmt.Errorf("release %q in namespace %q: chart is missing", ra.Name(), ra.Namespace())
+	}
+	ca, err := chart.NewAccessor(chartValue)
+	if err != nil {
+		return Release{}, fmt.Errorf("release %q in namespace %q: failed to access chart: %w", ra.Name(), ra.Namespace(), err)
+	}
+	md := ca.MetadataAsMap()
+	if md == nil {
+		return Release{}, fmt.Errorf("release %q in namespace %q: chart metadata is missing", ra.Name(), ra.Namespace())
+	}
+	version, _ := md["Version"].(string)
+	appVersion, _ := md["AppVersion"].(string)
+	return Release{
+		Name:         ra.Name(),
+		Namespace:    ra.Namespace(),
+		Chart:        ca.Name() + "-" + version,
+		ChartVersion: version,
+		AppVersion:   appVersion,
+	}, nil
 }
 
 // convertReleaseList turns the Helm SDK's slice of release.Releaser into the
@@ -417,36 +485,12 @@ func convertReleaseList(list []release.Releaser) ([]Release, error) {
 	var out []Release
 	var conversionErrs []error
 	for i, rel := range list {
-		ra, err := release.NewAccessor(rel)
+		info, err := releaseInfo(i, rel)
 		if err != nil {
-			conversionErrs = append(conversionErrs, fmt.Errorf("failed to decode release at index %d: %w", i, err))
+			conversionErrs = append(conversionErrs, err)
 			continue
 		}
-		chartValue := ra.Chart()
-		if isNilChart(chartValue) {
-			conversionErrs = append(conversionErrs, fmt.Errorf("release %q in namespace %q: chart is missing", ra.Name(), ra.Namespace()))
-			continue
-		}
-		ca, err := chart.NewAccessor(chartValue)
-		if err != nil {
-			conversionErrs = append(conversionErrs, fmt.Errorf("release %q in namespace %q: failed to access chart: %w", ra.Name(), ra.Namespace(), err))
-			continue
-		}
-		md := ca.MetadataAsMap()
-		if md == nil {
-			conversionErrs = append(conversionErrs, fmt.Errorf("release %q in namespace %q: chart metadata is missing", ra.Name(), ra.Namespace()))
-			continue
-		}
-		version, _ := md["Version"].(string)
-		appVersion, _ := md["AppVersion"].(string)
-		chartName := ca.Name()
-		out = append(out, Release{
-			Name:         ra.Name(),
-			Namespace:    ra.Namespace(),
-			Chart:        chartName + "-" + version,
-			ChartVersion: version,
-			AppVersion:   appVersion,
-		})
+		out = append(out, info)
 	}
 	return out, errors.Join(conversionErrs...)
 }
@@ -485,6 +529,7 @@ func FetchReleases(settings *cli.EnvSettings, debug bool) ([]Release, error) {
 	}
 
 	releases, conversionErr := convertReleaseList(releaseList)
+
 	if debug {
 		for _, rel := range releases {
 			fmt.Printf("Debug: loaded release %s in namespace %s (chart: %s, app_version: %s)\n", rel.Name, rel.Namespace, rel.Chart, rel.AppVersion)
