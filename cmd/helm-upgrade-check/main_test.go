@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,6 +30,7 @@ import (
 
 	"github.com/fatih/color"
 	"helm.sh/helm/v4/pkg/cli"
+	"helm.sh/helm/v4/pkg/helmpath"
 	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
 
@@ -36,7 +38,7 @@ type fakeSearcher struct {
 	res upgradecheck.ChartSearchResult
 }
 
-func (f *fakeSearcher) Search(_ string) upgradecheck.ChartSearchResult { return f.res }
+func (f *fakeSearcher) Search(_ string) (upgradecheck.ChartSearchResult, error) { return f.res, nil }
 
 func TestMain_JSONOutput(t *testing.T) {
 	// save originals
@@ -88,6 +90,9 @@ func TestMain_JSONOutput(t *testing.T) {
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		t.Fatalf("failed to unmarshal JSON output: %v\noutput: %s", err, string(out))
+	}
+	if warnings, ok := parsed["warnings"].([]interface{}); !ok || len(warnings) == 0 {
+		t.Fatalf("expected warnings array in JSON output, got %v", parsed["warnings"])
 	}
 
 	results, ok := parsed["results"].([]interface{})
@@ -575,6 +580,189 @@ func runMainCapturingOutput(t *testing.T, args []string) string {
 	return string(out)
 }
 
+func runMainCapturingStdoutStderr(t *testing.T, args []string) (string, string) {
+	t.Helper()
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	oldColorOutput := color.Output
+	oldArgs := os.Args
+	defer func() {
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+		color.Output = oldColorOutput
+		os.Args = oldArgs
+	}()
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+	color.Output = stdoutW
+	flag.CommandLine = flag.NewFlagSet(args[0], flag.ExitOnError)
+	os.Args = args
+	main()
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	stdout, _ := io.ReadAll(stdoutR)
+	stderr, _ := io.ReadAll(stderrR)
+	return string(stdout), string(stderr)
+}
+
+func TestMain_SearchFailureWarnsAndKeepsSuccessfulRepo(t *testing.T) {
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+	}()
+
+	cacheDir := t.TempDir()
+	indexPath := filepath.Join(cacheDir, helmpath.CacheIndexFile("good"))
+	if err := os.WriteFile(indexPath, []byte(`apiVersion: v1
+entries:
+  demo:
+    - name: demo
+      version: 2.0.0
+      appVersion: 2.0.0
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repos := []*repo.Entry{{Name: "good"}, {Name: "bad"}}
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return repos, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{
+			{Name: "demo-one", Namespace: "default", Chart: "demo-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"},
+			{Name: "demo-two", Namespace: "staging", Chart: "demo-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"},
+		}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, _ string, includePrerel bool) chartSearcher {
+		return upgradecheck.NewChartSearcher(repos, cacheDir, includePrerel)
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"cmd", "--json"}
+	stdout, stderr := runMainCapturingStdoutStderr(t, os.Args)
+	os.Args = origArgs
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, stdout)
+	}
+	warnings, ok := parsed["warnings"].([]interface{})
+	if !ok || len(warnings) != 1 {
+		t.Fatalf("expected exactly one deduplicated search warning in JSON output: %v", parsed["warnings"])
+	}
+	if strings.Count(stderr, "warning:") != 1 || !strings.Contains(stderr, `repo "bad"`) {
+		t.Fatalf("expected search warning on stderr, got %q", stderr)
+	}
+	if strings.Contains(stderr, "search for chart") {
+		t.Fatalf("search warning should not include a chart wrapper: %q", stderr)
+	}
+	results := parsed["results"].([]interface{})
+	if len(results) != 2 {
+		t.Fatalf("expected both releases in results: %v", parsed["results"])
+	}
+	for _, result := range results {
+		if len(result.(map[string]interface{})["repos"].([]interface{})) != 1 {
+			t.Fatalf("expected successful repo to remain in results: %v", parsed["results"])
+		}
+	}
+}
+
+func TestMain_AllRepositorySearchFailureIsFatal(t *testing.T) {
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origExit := exitFunc
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		exitFunc = origExit
+	}()
+
+	cacheDir := t.TempDir()
+	repos := []*repo.Entry{{Name: "bad-one"}, {Name: "bad-two"}}
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return repos, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{Name: "demo", Namespace: "default", Chart: "demo-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"}}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, _ string, includePrerel bool) chartSearcher {
+		return upgradecheck.NewChartSearcher(repos, cacheDir, includePrerel)
+	}
+	var code int
+	exitFunc = func(c int) { code = c }
+
+	origArgs := os.Args
+	os.Args = []string{"cmd", "--json"}
+	stdout, stderr := runMainCapturingStdoutStderr(t, os.Args)
+	os.Args = origArgs
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if stdout != "" {
+		t.Fatalf("fatal search failure must not emit JSON, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "all configured repositories failed") {
+		t.Fatalf("expected all-repositories-failed error, got %q", stderr)
+	}
+}
+
+func TestMain_PartialReleaseDecodeWarnsAndContinues(t *testing.T) {
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+	}()
+
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{{Name: "repo"}}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{Name: "demo", Namespace: "default", Chart: "demo-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"}}, fmt.Errorf("release at index 1 could not be decoded")
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{{Repo: "repo", Version: "2.0.0", AppVersion: "2.0.0"}},
+		}}
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"cmd", "--json"}
+	stdout, stderr := runMainCapturingStdoutStderr(t, os.Args)
+	os.Args = origArgs
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, stdout)
+	}
+	warnings, ok := parsed["warnings"].([]interface{})
+	if !ok || len(warnings) == 0 || !strings.Contains(warnings[0].(string), "release could not be decoded") {
+		t.Fatalf("expected partial release warning in JSON output: %v", parsed["warnings"])
+	}
+	if !strings.Contains(stderr, "warning:") {
+		t.Fatalf("expected partial release warning on stderr, got %q", stderr)
+	}
+	if len(parsed["results"].([]interface{})) != 1 {
+		t.Fatalf("expected successfully decoded release in results: %v", parsed["results"])
+	}
+}
+
 // grafanaRepoLines finds the "grafana" and "grafana-community" repo rows (if
 // present) among the printed table lines for a release in "monitoring".
 func grafanaRepoLines(out string) (grafanaLine, communityLine string) {
@@ -782,6 +970,153 @@ func TestMain_NotUpgradable_DropsRepoEntriesNotMatchingRunningVersion(t *testing
 	}
 	if communityLine == "" {
 		t.Error("grafana-community repo line should still be present")
+	}
+}
+
+// stubPluginFuncs replaces the indirection hooks main() uses with stubs
+// returning the supplied releases and search result, restoring the originals
+// (and os.Args) when the test finishes.
+func stubPluginFuncs(t *testing.T, releases []upgradecheck.Release, res upgradecheck.ChartSearchResult) {
+	t.Helper()
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	t.Cleanup(func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	})
+
+	loadRepoEntriesFunc = func(_ *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(_ *cli.EnvSettings, _ bool) ([]upgradecheck.Release, error) {
+		return releases, nil
+	}
+	newChartSearcherFunc = func(_ []*repo.Entry, _ string, _ bool) chartSearcher {
+		return &fakeSearcher{res: res}
+	}
+}
+
+func TestMain_VersionFlag(t *testing.T) {
+	// --version prints the version and exits before touching repos or the
+	// cluster, so the stubs must never be called.
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origArgs := os.Args
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		os.Args = origArgs
+	}()
+	loadRepoEntriesFunc = func(_ *cli.EnvSettings) ([]*repo.Entry, error) {
+		t.Error("repo entries must not be loaded when --version is given")
+		return nil, nil
+	}
+	fetchReleasesFunc = func(_ *cli.EnvSettings, _ bool) ([]upgradecheck.Release, error) {
+		t.Error("releases must not be fetched when --version is given")
+		return nil, nil
+	}
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--version"})
+	if !strings.Contains(out, "helm-upgrade-check version "+Version) {
+		t.Errorf("expected version output, got: %q", out)
+	}
+}
+
+func TestMain_MissingChart_ReportedSeparately(t *testing.T) {
+	// A release whose chart isn't in any repo can't be evaluated, so it is
+	// listed under "Unable to find chart information" instead of the table.
+	stubPluginFuncs(t,
+		[]upgradecheck.Release{{Name: "mystery", Namespace: "ns", Chart: "mystery-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"}},
+		upgradecheck.ChartSearchResult{},
+	)
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	if results, _ := parsed["results"].([]interface{}); len(results) != 0 {
+		t.Errorf("expected no results for a chart missing from every repo, got %v", results)
+	}
+	missing, _ := parsed["missing_charts"].([]interface{})
+	if len(missing) != 1 {
+		t.Fatalf("expected 1 missing chart, got %v", parsed["missing_charts"])
+	}
+	entry := missing[0].(map[string]interface{})
+	if entry["Release"] != "mystery" || entry["Namespace"] != "ns" || entry["Chart"] != "mystery" {
+		t.Errorf("unexpected missing chart entry: %v", entry)
+	}
+
+	humanOut := runMainCapturingOutput(t, []string{"cmd"})
+	if !strings.Contains(humanOut, "Unable to find chart information in any repo") {
+		t.Errorf("expected the missing chart section in human output, got: %q", humanOut)
+	}
+	if !strings.Contains(humanOut, "mystery") {
+		t.Errorf("expected the missing release to be listed, got: %q", humanOut)
+	}
+	if strings.Contains(humanOut, "Upgrade commands:") {
+		t.Errorf("no upgrade commands should be printed for a missing chart, got: %q", humanOut)
+	}
+}
+
+func TestMain_UnknownInstalledVersions(t *testing.T) {
+	// A release without chart/app versions in its metadata still has to be
+	// reported — as "Unknown" — rather than silently dropped.
+	stubPluginFuncs(t,
+		[]upgradecheck.Release{{Name: "rel", Namespace: "ns", Chart: "chart"}},
+		upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{{Repo: "r1", Version: "2.0.0", AppVersion: "2.0.0"}},
+		},
+	)
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	if res["installed_chart_version"] != "Unknown" {
+		t.Errorf("installed_chart_version: got %v, want Unknown", res["installed_chart_version"])
+	}
+	if res["installed_app_version"] != "Unknown" {
+		t.Errorf("installed_app_version: got %v, want Unknown", res["installed_app_version"])
+	}
+	// "Unknown" isn't semver, so no upgrade can be claimed.
+	if up, _ := res["upgradable"].(bool); up {
+		t.Error("expected upgradable=false when the installed version is unknown")
+	}
+}
+
+func TestMain_MissingRepoVersionShownAsNA(t *testing.T) {
+	// Index entries can carry an empty or literal "null" version; those are
+	// displayed as N/A and never treated as an upgrade.
+	for _, version := range []string{"", "null"} {
+		t.Run("version="+version, func(t *testing.T) {
+			stubPluginFuncs(t,
+				[]upgradecheck.Release{{Name: "rel", Namespace: "ns", Chart: "chart-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"}},
+				upgradecheck.ChartSearchResult{
+					Versions: []upgradecheck.RepoChartVersion{{Repo: "r1", Version: version, AppVersion: "1.0.0"}},
+				},
+			)
+
+			out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+			var parsed map[string]interface{}
+			if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v\n%s", err, out)
+			}
+			res := parsed["results"].([]interface{})[0].(map[string]interface{})
+			repo0 := res["repos"].([]interface{})[0].(map[string]interface{})
+			if repo0["latest_chart_version"] != "N/A" {
+				t.Errorf("latest_chart_version: got %v, want N/A", repo0["latest_chart_version"])
+			}
+			if up, _ := res["upgradable"].(bool); up {
+				t.Error("expected upgradable=false when the repo has no usable version")
+			}
+		})
 	}
 }
 
