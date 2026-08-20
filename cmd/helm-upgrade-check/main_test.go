@@ -639,7 +639,10 @@ entries:
 		return repos, nil
 	}
 	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
-		return []upgradecheck.Release{{Name: "demo", Namespace: "default", Chart: "demo-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"}}, nil
+		return []upgradecheck.Release{
+			{Name: "demo-one", Namespace: "default", Chart: "demo-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"},
+			{Name: "demo-two", Namespace: "staging", Chart: "demo-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"},
+		}, nil
 	}
 	newChartSearcherFunc = func(repos []*repo.Entry, _ string, includePrerel bool) chartSearcher {
 		return upgradecheck.NewChartSearcher(repos, cacheDir, includePrerel)
@@ -655,15 +658,23 @@ entries:
 		t.Fatalf("invalid JSON output: %v\n%s", err, stdout)
 	}
 	warnings, ok := parsed["warnings"].([]interface{})
-	if !ok || len(warnings) == 0 {
-		t.Fatalf("expected search warning in JSON output: %v", parsed["warnings"])
+	if !ok || len(warnings) != 1 {
+		t.Fatalf("expected exactly one deduplicated search warning in JSON output: %v", parsed["warnings"])
 	}
-	if !strings.Contains(stderr, "warning:") || !strings.Contains(stderr, `repo "bad"`) {
+	if strings.Count(stderr, "warning:") != 1 || !strings.Contains(stderr, `repo "bad"`) {
 		t.Fatalf("expected search warning on stderr, got %q", stderr)
 	}
+	if strings.Contains(stderr, "search for chart") {
+		t.Fatalf("search warning should not include a chart wrapper: %q", stderr)
+	}
 	results := parsed["results"].([]interface{})
-	if len(results) != 1 || len(results[0].(map[string]interface{})["repos"].([]interface{})) != 1 {
-		t.Fatalf("expected successful repo to remain in results: %v", parsed["results"])
+	if len(results) != 2 {
+		t.Fatalf("expected both releases in results: %v", parsed["results"])
+	}
+	for _, result := range results {
+		if len(result.(map[string]interface{})["repos"].([]interface{})) != 1 {
+			t.Fatalf("expected successful repo to remain in results: %v", parsed["results"])
+		}
 	}
 }
 

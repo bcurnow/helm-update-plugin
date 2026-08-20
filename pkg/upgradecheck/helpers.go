@@ -423,7 +423,7 @@ func convertReleaseList(list []release.Releaser) ([]Release, error) {
 			continue
 		}
 		chartValue := ra.Chart()
-		if chartValue == nil || (reflect.ValueOf(chartValue).Kind() == reflect.Ptr && reflect.ValueOf(chartValue).IsNil()) {
+		if isNilChart(chartValue) {
 			conversionErrs = append(conversionErrs, fmt.Errorf("release %q in namespace %q: chart is missing", ra.Name(), ra.Namespace()))
 			continue
 		}
@@ -449,6 +449,16 @@ func convertReleaseList(list []release.Releaser) ([]Release, error) {
 		})
 	}
 	return out, errors.Join(conversionErrs...)
+}
+
+// isNilChart detects typed-nil chart pointers accepted by Helm's accessor.
+// reflect is needed because a typed nil pointer stored in chart.Charter is not equal to nil.
+func isNilChart(ch chart.Charter) bool {
+	if ch == nil {
+		return true
+	}
+	value := reflect.ValueOf(ch)
+	return value.Kind() == reflect.Ptr && value.IsNil()
 }
 
 // FetchReleases retrieves all Helm releases across every namespace.  The

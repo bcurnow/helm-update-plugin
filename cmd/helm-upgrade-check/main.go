@@ -33,6 +33,11 @@ import (
 var exitFunc = os.Exit
 var Version = "dev"
 
+type joinedError interface {
+	error
+	Unwrap() []error
+}
+
 func main() {
 	var debug bool
 	var jsonOut bool
@@ -70,7 +75,12 @@ func main() {
 		fmt.Println("done!")
 	}
 	warnings := []string{}
+	seenWarnings := map[string]struct{}{}
 	addWarning := func(message string) {
+		if _, ok := seenWarnings[message]; ok {
+			return
+		}
+		seenWarnings[message] = struct{}{}
 		warnings = append(warnings, message)
 		fmt.Fprintln(os.Stderr, "warning:", message)
 	}
@@ -137,7 +147,9 @@ func main() {
 				exitFunc(1)
 				return
 			}
-			addWarning(fmt.Sprintf("search for chart %q may be incomplete: %v", chartName, searchErr))
+			for _, component := range flattenWarningErrors(searchErr) {
+				addWarning(component.Error())
+			}
 		}
 		if len(info.Versions) == 0 {
 			missingCharts = append(missingCharts, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
@@ -273,6 +285,34 @@ func main() {
 			fmt.Printf(printFormat, e.Release, e.Namespace, e.Chart)
 		}
 	}
+}
+
+func flattenWarningErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if unwrap, ok := err.(interface{ Unwrap() error }); ok {
+		if joined, ok := unwrap.Unwrap().(joinedError); ok {
+			return flattenJoinedErrors(joined)
+		}
+	}
+	return flattenJoinedErrors(err)
+}
+
+func flattenJoinedErrors(err error) []error {
+	joined, ok := err.(joinedError)
+	if !ok {
+		return []error{err}
+	}
+	var components []error
+	for _, component := range joined.Unwrap() {
+		if _, ok := component.(joinedError); ok {
+			components = append(components, flattenJoinedErrors(component)...)
+			continue
+		}
+		components = append(components, component)
+	}
+	return components
 }
 
 type chartSearcher interface {
