@@ -40,12 +40,13 @@ import (
 	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
 
-// CompareVersions returns true if v1 > v2 using a simple semver comparison.
-// It strips any leading "v" prefixes and compares numeric components left to
-// right.  When the initial segments are equal, the longer version string is
-// considered greater (e.g. "1.2.0" > "1.2").
-// If includePrerel is true, then the comparison will consider pre-release versions
-// pre-release versions with a higher major.minor.patch will be considered greater than stable versions with a lower major.minor.patch
+// CompareVersions returns true if v1 > v2 according to semver, after stripping
+// any leading "v" prefix.  Either version failing to parse as semver yields
+// false, so an unparseable version is never treated as an upgrade.
+// If includePrerel is true, a pre-release version with a higher
+// major.minor.patch is considered greater than a stable version with a lower
+// major.minor.patch; if it is false, a pre-release is never greater than a
+// stable version.
 func CompareVersions(v1, v2 string, includePrerel bool) bool {
 	// Parse the versions, if either is fails (is not a semver), return false to avoid false positives.
 	// This means that if a chart has an invalid version, we won't consider it upgradable, which is a safer failure mode than the opposite.
@@ -63,8 +64,6 @@ func CompareVersions(v1, v2 string, includePrerel bool) bool {
 		// sv2 is a stable version, pre-release are not considered greater than stables, so return false
 		return false
 	}
-
-	// At this point, there are two possible scenarios:
 
 	return sv1.GreaterThan(sv2)
 }
@@ -183,6 +182,10 @@ func NewChartSearcher(repos []*repo.Entry, cacheDir string, includePrerel bool) 
 // previously computed, it is returned from the cache; otherwise the method
 // scans each repository index and updates the cache.  Results from repositories
 // that load successfully are returned alongside any per-repository errors.
+//
+// Search is not safe for concurrent use: it fans out across repositories
+// internally, but resultMap is unsynchronized, so callers must invoke it from
+// a single goroutine.
 func (s *ChartSearcher) Search(chartName string) (ChartSearchResult, error) {
 	if r, ok := s.resultMap[chartName]; ok {
 		return r, s.resultErrMap[chartName]
@@ -474,6 +477,7 @@ func releaseInfo(index int, rel release.Releaser) (Release, error) {
 		Name:         ra.Name(),
 		Namespace:    ra.Namespace(),
 		Chart:        ca.Name() + "-" + version,
+		ChartName:    ca.Name(),
 		ChartVersion: version,
 		AppVersion:   appVersion,
 	}, nil

@@ -778,6 +778,7 @@ func TestFetchReleases_ReturnsClusterReleases(t *testing.T) {
 			Name:         "redis",
 			Namespace:    "data",
 			Chart:        "redis-14.8.8",
+			ChartName:    "redis",
 			ChartVersion: "14.8.8",
 			AppVersion:   "6.2.5",
 		}, releases[0])

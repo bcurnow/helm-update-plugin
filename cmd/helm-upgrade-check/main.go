@@ -117,6 +117,10 @@ func main() {
 		LatestChartVersion string `json:"latest_chart_version"`
 		LatestAppVersion   string `json:"latest_app_version"`
 		Upgradable         bool   `json:"upgradable"`
+		// UpgradeCommand is the helm upgrade for this specific repo. Repos are
+		// alternative sources for the same release, so at most one of them may
+		// ever be run; Commands carries the recommended one.
+		UpgradeCommand string `json:"upgrade_command,omitempty"`
 	}
 
 	type resultItem struct {
@@ -127,13 +131,19 @@ func main() {
 		InstalledAppVersion   string       `json:"installed_app_version"`
 		Repos                 []repoResult `json:"repos"`
 		Upgradable            bool         `json:"upgradable"`
-		Commands              []string     `json:"commands,omitempty"`
+		// RecommendedRepo is the repo whose chart Commands upgrades to; any
+		// other upgradable repo is an alternative to it, never an addition.
+		RecommendedRepo string   `json:"recommended_repo,omitempty"`
+		Commands        []string `json:"commands,omitempty"`
 	}
 
 	var results []resultItem
 	var missingCharts []upgradecheck.MissingChartError
 	for _, rel := range releases {
-		chartName := upgradecheck.ChartName(rel.Chart)
+		chartName := rel.ChartName
+		if chartName == "" {
+			chartName = upgradecheck.ChartName(rel.Chart, rel.ChartVersion)
+		}
 		installedChartVer := upgradecheck.DisplayValue(rel.ChartVersion, "Unknown")
 		installedAppVer := upgradecheck.DisplayValue(rel.AppVersion, "Unknown")
 		info, searchErr := searcher.Search(chartName)
@@ -155,6 +165,7 @@ func main() {
 
 		var repos []repoResult
 		var commands []string
+		var recommended *repoResult
 		upgradable := false
 		for _, v := range info.Versions {
 			latestChartVer := upgradecheck.DisplayValue(v.Version, "N/A")
@@ -167,19 +178,38 @@ func main() {
 			// to the chart-version decision.
 			appRegresses := upgradecheck.CompareVersions(installedAppVer, v.AppVersion, includePrerel)
 			repoUpgradable := chartNewer && !appRegresses
-			repos = append(repos, repoResult{
+			// Normalized the same way as the installed app version so the
+			// noise filter below can match a chart that has none.
+			latestAppVer := upgradecheck.DisplayValue(v.AppVersion, "Unknown")
+			rr := repoResult{
 				Repo:               v.Repo,
 				LatestChartVersion: latestChartVer,
-				LatestAppVersion:   v.AppVersion,
+				LatestAppVersion:   latestAppVer,
 				Upgradable:         repoUpgradable,
-			})
+			}
 			if repoUpgradable {
 				upgradable = true
-				if len(commands) == 0 {
-					commands = append(commands, upgradecheck.ValuesCommands(rel.Name, rel.Namespace)...)
-				}
-				commands = append(commands, upgradecheck.UpgradeCommand(rel.Name, rel.Namespace, v.Repo, chartName, latestChartVer))
+				rr.UpgradeCommand = upgradecheck.UpgradeCommand(rel.Name, rel.Namespace, v.Repo, chartName, latestChartVer)
 			}
+			repos = append(repos, rr)
+		}
+
+		// Every upgradable repo is an alternative source for the same release,
+		// not a step in a sequence, so exactly one is recommended: the highest
+		// chart version on offer. Running a second would immediately re-upgrade
+		// the release from a different repo's chart.
+		for i := range repos {
+			if !repos[i].Upgradable {
+				continue
+			}
+			if recommended == nil || upgradecheck.CompareVersions(repos[i].LatestChartVersion, recommended.LatestChartVersion, includePrerel) {
+				recommended = &repos[i]
+			}
+		}
+		recommendedRepo := ""
+		if recommended != nil {
+			recommendedRepo = recommended.Repo
+			commands = append(upgradecheck.ValuesCommands(rel.Name, rel.Namespace), recommended.UpgradeCommand)
 		}
 
 		if !upgradable {
@@ -191,6 +221,9 @@ func main() {
 			// fall back to showing everything rather than hiding the release.
 			var matched []repoResult
 			for _, rv := range repos {
+				// Both sides are normalized to "Unknown" when absent, so a
+				// chart with no app version in the index still matches a
+				// release installed without one.
 				if rv.LatestChartVersion == installedChartVer && rv.LatestAppVersion == installedAppVer {
 					matched = append(matched, rv)
 				}
@@ -208,6 +241,7 @@ func main() {
 			InstalledAppVersion:   installedAppVer,
 			Repos:                 repos,
 			Upgradable:            upgradable,
+			RecommendedRepo:       recommendedRepo,
 			Commands:              commands,
 		})
 	}
@@ -237,6 +271,10 @@ func main() {
 	printFormat := "%-25s %-25s %-25s %-20s %-18s %-18s %-18s\n"
 	upToDatePrintf := color.New(color.FgGreen).PrintfFunc()
 	upgradablePrintf := color.New(color.FgBlue).PrintfFunc()
+	// A repo offering nothing while another repo does is "behind", not "up to
+	// date" — printing it green next to the blue row reads as if the release
+	// were already current.
+	behindPrintf := color.New(color.FgYellow).PrintfFunc()
 	fmt.Println()
 	printTableHeader(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Running Version", "Chart Version", "App Version")
 	var upgradableResults []resultItem
@@ -247,6 +285,8 @@ func main() {
 			printRow := upToDatePrintf
 			if rv.Upgradable {
 				printRow = upgradablePrintf
+			} else if r.Upgradable {
+				printRow = behindPrintf
 			}
 			printRow(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
 		}
@@ -262,6 +302,15 @@ func main() {
 			fmt.Printf("\n%s (%s):\n", r.ReleaseName, r.Namespace)
 			for _, cmd := range r.Commands {
 				fmt.Printf("  %s\n", cmd)
+			}
+			// Alternatives are commented out and labelled because the block
+			// above is meant to be pasted wholesale: a second live helm upgrade
+			// would upgrade the release again from a different repo's chart.
+			for _, rv := range r.Repos {
+				if rv.Upgradable && rv.Repo != r.RecommendedRepo {
+					fmt.Printf("  # alternative: %s offers %s instead (pick one, do not run both)\n", rv.Repo, rv.LatestChartVersion)
+					fmt.Printf("  # %s\n", rv.UpgradeCommand)
+				}
 			}
 		}
 	}

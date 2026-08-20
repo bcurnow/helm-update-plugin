@@ -90,7 +90,8 @@ A chart found in multiple repos gets one row per repo, each showing that repo's 
 ### Status Indicators
 
 - **Blue text** — this repo offers a newer chart version and its app version does not regress
-- **Green text** — up-to-date from this repo: no newer version found, or the only "newer" chart ships an older app version (suppressed)
+- **Yellow text** — this repo has nothing to offer, but another repo does: the repo is behind (or blocked by the app-regression guard), not up to date
+- **Green text** — up-to-date from this repo: no newer version found anywhere for this release, or the only "newer" chart ships an older app version (suppressed)
 
 ### Version Selection and Upgrade Suppression
 
@@ -115,7 +116,14 @@ For each release with at least one repo offering a valid upgrade, the plugin pri
 
 1. **Get current values** — saves the release's current values to a file
 2. **Review values** — displays the saved values for inspection
-3. **Execute upgrade** — one command per repo that offers an upgrade, each using that repo's own **chart** version
+3. **Execute upgrade** — a single command, using the **chart** version of the recommended repo (the upgradable repo with the highest chart version)
+
+If more than one repo offers an upgrade, those repos are **alternatives** — upgrading from two of them in sequence would just re-upgrade the release from a different vendor's chart. The extra commands are therefore printed commented out and labelled, so the block stays safe to paste as a whole:
+
+```
+  # alternative: bitnami offers 2.4.0 instead (pick one, do not run both)
+  # helm upgrade --namespace ingress ingress-nginx bitnami/ingress-nginx --version 2.4.0 --values ingress-nginx.values
+```
 
 Example output:
 
@@ -148,15 +156,19 @@ Use `--json` / `-j` for machine-readable output. Each result includes:
       "repo": "ingress-nginx",
       "latest_chart_version": "4.10.0",
       "latest_app_version": "1.10.1",
-      "upgradable": true
+      "upgradable": true,
+      "upgrade_command": "helm upgrade --namespace ingress ingress-nginx ingress-nginx/ingress-nginx --version 4.10.0 --values ingress-nginx.values"
     }
   ],
   "upgradable": true,
+  "recommended_repo": "ingress-nginx",
   "commands": [...]
 }
 ```
 
 Each entry in `repos` carries that repo's own `latest_chart_version` / `latest_app_version` / `upgradable` — a chart found in multiple repos can have a different version (and upgrade verdict) per repo. The top-level `upgradable` is `true` if any repo offers a valid upgrade.
+
+Repos are **alternative sources** for the same release, never steps to run in sequence. `commands` therefore contains exactly one `helm upgrade`, for `recommended_repo` (the upgradable repo with the highest chart version); every other upgradable repo's own command is available as `repos[].upgrade_command`, and is printed commented out in the human-readable output.
 
 The top-level JSON object contains `results`, `missing_charts`, and a `warnings` array. Warning details are also printed to stderr; stdout remains valid JSON for machine-readable consumers.
 
