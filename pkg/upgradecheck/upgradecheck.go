@@ -17,6 +17,7 @@
 package upgradecheck
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -35,6 +36,11 @@ type MissingChartError struct {
 	Release   string
 	Namespace string
 	Chart     string
+}
+
+// Error returns a description of the missing chart and its release.
+func (e MissingChartError) Error() string {
+	return fmt.Sprintf("release %q in namespace %q uses chart %q, which was not found in any configured repository", e.Release, e.Namespace, e.Chart)
 }
 
 // ChartName strips the version suffix from the string that Helm returns

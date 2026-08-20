@@ -111,14 +111,16 @@ func TestChartSearcher_Search_MultipleRepos(t *testing.T) {
 		},
 	}
 
-	res := searcher.Search("redis")
+	res, err := searcher.Search("redis")
+	assert.NoError(t, err)
 	assert.Equal(t, "2.0.0", res.Version)
 	assert.Equal(t, "7.2.0", res.AppVersion)
 	assert.ElementsMatch(t, []string{"r1", "bitnami"}, res.Repos)
 
 	// ensure caching works
 	searcher.idxCache = map[string]*repo.IndexFile{}
-	res2 := searcher.Search("redis")
+	res2, err := searcher.Search("redis")
+	assert.NoError(t, err)
 	assert.Equal(t, res, res2)
 }
 
@@ -146,7 +148,8 @@ func TestChartSearcher_Search_ConcurrentLoadKeepsRepoVersionsDistinct(t *testing
 
 	for i := 0; i < 50; i++ {
 		searcher := NewChartSearcher(repos, cacheDir, false)
-		res := searcher.Search("grafana")
+		res, err := searcher.Search("grafana")
+		assert.NoError(t, err)
 
 		byRepo := map[string]string{}
 		for _, v := range res.Versions {
@@ -160,9 +163,48 @@ func TestChartSearcher_Search_ConcurrentLoadKeepsRepoVersionsDistinct(t *testing
 func TestChartSearcher_NoChart(t *testing.T) {
 	repos := []*repo.Entry{{Name: "empty"}}
 	s := NewChartSearcher(repos, "", false)
-	r := s.Search("nonexistent")
+	s.idxCache["empty"] = &repo.IndexFile{Entries: map[string]repo.ChartVersions{}}
+	r, err := s.Search("nonexistent")
+	assert.NoError(t, err)
 	assert.Empty(t, r.Repos)
 	assert.Equal(t, "", r.Version)
+}
+
+func TestChartSearcher_Search_ReturnsSuccessfulReposAndFailures(t *testing.T) {
+	cacheDir := t.TempDir()
+	repos := []*repo.Entry{{Name: "good"}, {Name: "bad"}}
+	searcher := NewChartSearcher(repos, cacheDir, false)
+	searcher.idxCache["good"] = &repo.IndexFile{
+		Entries: map[string]repo.ChartVersions{
+			"demo": {{Metadata: &chartv2.Metadata{Version: "1.2.3", AppVersion: "4.5.6"}}},
+		},
+	}
+
+	res, err := searcher.Search("demo")
+
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, `repo "bad"`)
+	assert.Equal(t, []string{"good"}, res.Repos)
+	assert.Equal(t, "1.2.3", res.Version)
+}
+
+func TestChartSearcher_Search_InvalidVersionReturnsError(t *testing.T) {
+	repos := []*repo.Entry{{Name: "repo"}}
+	searcher := NewChartSearcher(repos, "", false)
+	searcher.idxCache["repo"] = &repo.IndexFile{
+		Entries: map[string]repo.ChartVersions{
+			"demo": {
+				{Metadata: &chartv2.Metadata{Version: "not-semver"}},
+				{Metadata: &chartv2.Metadata{Version: "1.0.0"}},
+			},
+		},
+	}
+
+	res, err := searcher.Search("demo")
+
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, `chart "demo" has invalid version "not-semver"`)
+	assert.Equal(t, "1.0.0", res.Version)
 }
 
 // fakeOCI is a minimal implementation of the ociClient interface used in
@@ -207,7 +249,8 @@ func TestOCIRepositoryLookup(t *testing.T) {
 	repoEntry := &repo.Entry{Name: "ociRepo", URL: "oci://example.com/charts/mychart"}
 	s := NewChartSearcher([]*repo.Entry{repoEntry}, "", false)
 
-	res := s.Search("mychart")
+	res, err := s.Search("mychart")
+	assert.NoError(t, err)
 	// Version is the chart version (OCI tag "1.0.0"), not the app version.
 	assert.Equal(t, "1.0.0", res.Version)
 	assert.Equal(t, "5.5.5", res.AppVersion)
@@ -216,7 +259,7 @@ func TestOCIRepositoryLookup(t *testing.T) {
 
 func TestPrintUpgradeCommands(t *testing.T) {
 	buf := &bytes.Buffer{}
-	PrintUpgradeCommands(buf, "rel", "ns", "repo1", "chart", "1.2.3")
+	assert.NoError(t, PrintUpgradeCommands(buf, "rel", "ns", "repo1", "chart", "1.2.3"))
 	out := buf.String()
 	assert.Contains(t, out, "helm get values --namespace ns rel")
 	assert.Contains(t, out, "helm upgrade --namespace ns rel repo1/chart --version 1.2.3")
@@ -228,7 +271,8 @@ func TestConvertReleaseList(t *testing.T) {
 		Namespace: "n",
 		Chart:     &chartv2.Chart{Metadata: &chartv2.Metadata{Version: "1.2.3", AppVersion: "5.6.7"}},
 	}
-	out := convertReleaseList([]release.Releaser{helmRel})
+	out, err := convertReleaseList([]release.Releaser{helmRel})
+	assert.NoError(t, err)
 	if assert.Len(t, out, 1) {
 		assert.Equal(t, "r", out[0].Name)
 		assert.Equal(t, "n", out[0].Namespace)
@@ -246,12 +290,29 @@ func TestConvertReleaseList_ChartVersionDiffersFromAppVersion(t *testing.T) {
 		Namespace: "ingress",
 		Chart:     &chartv2.Chart{Metadata: &chartv2.Metadata{Name: "ingress-nginx", Version: "4.9.1", AppVersion: "1.9.1"}},
 	}
-	out := convertReleaseList([]release.Releaser{helmRel})
+	out, err := convertReleaseList([]release.Releaser{helmRel})
+	assert.NoError(t, err)
 	if assert.Len(t, out, 1) {
 		assert.Equal(t, "ingress-nginx-4.9.1", out[0].Chart)
 		assert.Equal(t, "4.9.1", out[0].ChartVersion)
 		assert.Equal(t, "1.9.1", out[0].AppVersion)
 	}
+}
+
+func TestConvertReleaseList_PartialFailure(t *testing.T) {
+	valid := &releasev1.Release{
+		Name:      "valid",
+		Namespace: "default",
+		Chart:     &chartv2.Chart{Metadata: &chartv2.Metadata{Name: "demo", Version: "1.0.0"}},
+	}
+	invalid := &releasev1.Release{Name: "invalid", Namespace: "default"}
+
+	out, err := convertReleaseList([]release.Releaser{valid, invalid})
+
+	assert.Len(t, out, 1)
+	assert.Equal(t, "valid", out[0].Name)
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, `release "invalid" in namespace "default": chart is missing`)
 }
 
 func TestLoadIndex_CachedFile(t *testing.T) {
@@ -310,7 +371,8 @@ func TestChartSearcher_PrerelFiltering_StableReturned(t *testing.T) {
 			},
 		},
 	}
-	res := s.Search("cilium")
+	res, err := s.Search("cilium")
+	assert.NoError(t, err)
 	assert.Equal(t, "1.19.4", res.Version)
 	assert.Equal(t, "1.19.4", res.AppVersion)
 	assert.Equal(t, []string{"cilium"}, res.Repos)
@@ -328,7 +390,8 @@ func TestChartSearcher_PrerelFiltering_PrerelReturnedWhenEnabled(t *testing.T) {
 			},
 		},
 	}
-	res := s.Search("cilium")
+	res, err := s.Search("cilium")
+	assert.NoError(t, err)
 	assert.Equal(t, "1.20.0-rc.1", res.Version)
 	assert.Equal(t, "1.20.0-rc.1", res.AppVersion)
 }

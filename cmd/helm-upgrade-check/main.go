@@ -18,6 +18,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -31,6 +32,11 @@ import (
 
 var exitFunc = os.Exit
 var Version = "dev"
+
+type joinedError interface {
+	error
+	Unwrap() []error
+}
 
 func main() {
 	var debug bool
@@ -63,9 +69,23 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error loading repo entries:", err)
 		exitFunc(1)
+		return
 	}
 	if !jsonOut {
 		fmt.Println("done!")
+	}
+	warnings := []string{}
+	seenWarnings := map[string]struct{}{}
+	addWarning := func(message string) {
+		if _, ok := seenWarnings[message]; ok {
+			return
+		}
+		seenWarnings[message] = struct{}{}
+		warnings = append(warnings, message)
+		fmt.Fprintln(os.Stderr, "warning:", message)
+	}
+	if len(repoEntries) == 0 {
+		addWarning("no repositories are configured; every release will be reported as missing")
 	}
 
 	searcher := newChartSearcherFunc(repoEntries, settings.RepositoryCache, includePrerel)
@@ -75,8 +95,14 @@ func main() {
 	}
 	releases, err := fetchReleasesFunc(settings, debug)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error retrieving releases:", err)
-		exitFunc(1)
+		if len(releases) == 0 {
+			fmt.Fprintln(os.Stderr, "error retrieving releases:", err)
+			exitFunc(1)
+			return
+		}
+		for _, component := range flattenWarningErrors(err) {
+			addWarning(fmt.Sprintf("release could not be decoded: %v", component))
+		}
 	}
 	if !jsonOut {
 		fmt.Println("done!")
@@ -104,7 +130,7 @@ func main() {
 	}
 
 	var results []resultItem
-	var errors []upgradecheck.MissingChartError
+	var missingCharts []upgradecheck.MissingChartError
 	for _, rel := range releases {
 		chartName := upgradecheck.ChartName(rel.Chart)
 		installedChartVer := rel.ChartVersion
@@ -115,9 +141,20 @@ func main() {
 		if installedAppVer == "" {
 			installedAppVer = "Unknown"
 		}
-		info := searcher.Search(chartName)
+		info, searchErr := searcher.Search(chartName)
+		if searchErr != nil {
+			var chartSearchErr *upgradecheck.ChartSearchError
+			if errors.As(searchErr, &chartSearchErr) && chartSearchErr.FailedRepos == chartSearchErr.TotalRepos && len(repoEntries) > 0 {
+				fmt.Fprintf(os.Stderr, "error searching for chart %q: all configured repositories failed to load their indexes: %v\n", chartName, searchErr)
+				exitFunc(1)
+				return
+			}
+			for _, component := range flattenWarningErrors(searchErr) {
+				addWarning(component.Error())
+			}
+		}
 		if len(info.Versions) == 0 {
-			errors = append(errors, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
+			missingCharts = append(missingCharts, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
 			continue
 		}
 
@@ -189,13 +226,15 @@ func main() {
 	if jsonOut {
 		out := map[string]interface{}{
 			"results":        results,
-			"missing_charts": errors,
+			"missing_charts": missingCharts,
+			"warnings":       warnings,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(out); err != nil {
 			fmt.Fprintln(os.Stderr, "error encoding JSON output:", err)
-			os.Exit(1)
+			exitFunc(1)
+			return
 		}
 		return
 	}
@@ -239,19 +278,47 @@ func main() {
 		}
 	}
 
-	if len(errors) > 0 {
+	if len(missingCharts) > 0 {
 		fmt.Println("\n\nUnable to find chart information in any repo for the following releases:")
 		printFormat = "%-20s %-20s %-20s\n"
 		fmt.Printf(printFormat, "Release", "Namespace", "Chart")
 		fmt.Printf(printFormat, "-------", "---------", "-----")
-		for _, e := range errors {
+		for _, e := range missingCharts {
 			fmt.Printf(printFormat, e.Release, e.Namespace, e.Chart)
 		}
 	}
 }
 
+func flattenWarningErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if unwrap, ok := err.(interface{ Unwrap() error }); ok {
+		if joined, ok := unwrap.Unwrap().(joinedError); ok {
+			return flattenJoinedErrors(joined)
+		}
+	}
+	return flattenJoinedErrors(err)
+}
+
+func flattenJoinedErrors(err error) []error {
+	joined, ok := err.(joinedError)
+	if !ok {
+		return []error{err}
+	}
+	var components []error
+	for _, component := range joined.Unwrap() {
+		if _, ok := component.(joinedError); ok {
+			components = append(components, flattenJoinedErrors(component)...)
+			continue
+		}
+		components = append(components, component)
+	}
+	return components
+}
+
 type chartSearcher interface {
-	Search(string) upgradecheck.ChartSearchResult
+	Search(string) (upgradecheck.ChartSearchResult, error)
 }
 
 var loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
