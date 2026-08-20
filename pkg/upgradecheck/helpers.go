@@ -342,6 +342,12 @@ func (s *ChartSearcher) setCachedIndex(name string, idx *repo.IndexFile) {
 }
 
 func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
+	if entry == nil {
+		return nil, fmt.Errorf("repository entry is nil")
+	}
+	if entry.Name == "" || strings.ContainsAny(entry.Name, `/\`) || entry.Name == "." || entry.Name == ".." {
+		return nil, fmt.Errorf("invalid repository name %q", entry.Name)
+	}
 	if idx, ok := s.getCachedIndex(entry.Name); ok {
 		return idx, nil
 	}
@@ -421,8 +427,11 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 // a file and display them for review, which precede any upgrade command.
 func ValuesCommands(release, namespace string) []string {
 	return []string{
-		fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", namespace, release, release),
-		fmt.Sprintf("cat %s.values", release),
+		fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values",
+			ShellQuote(namespace),
+			ShellQuote(release),
+			ShellQuote(release)),
+		fmt.Sprintf("cat %s.values", ShellQuote(release)),
 	}
 }
 
@@ -430,7 +439,13 @@ func ValuesCommands(release, namespace string) []string {
 // of chartName as published by repoName.  version is always a chart version,
 // which is what `helm upgrade --version` accepts.
 func UpgradeCommand(release, namespace, repoName, chartName, version string) string {
-	return fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", namespace, release, repoName, chartName, version, release)
+	return fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values",
+		ShellQuote(namespace),
+		ShellQuote(release),
+		ShellQuote(repoName),
+		ShellQuote(chartName),
+		ShellQuote(version),
+		ShellQuote(release))
 }
 
 // UpgradeCommands returns the full series of helm commands required to
@@ -536,7 +551,11 @@ func FetchReleases(settings *cli.EnvSettings, debug bool) ([]Release, error) {
 
 	if debug {
 		for _, rel := range releases {
-			fmt.Printf("Debug: loaded release %s in namespace %s (chart: %s, app_version: %s)\n", rel.Name, rel.Namespace, rel.Chart, rel.AppVersion)
+			fmt.Printf("Debug: loaded release %s in namespace %s (chart: %s, app_version: %s)\n",
+				SanitizeDisplay(rel.Name),
+				SanitizeDisplay(rel.Namespace),
+				SanitizeDisplay(rel.Chart),
+				SanitizeDisplay(rel.AppVersion))
 		}
 	}
 

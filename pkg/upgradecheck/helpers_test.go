@@ -272,6 +272,42 @@ func TestPrintUpgradeCommands(t *testing.T) {
 	assert.Contains(t, out, "helm upgrade --namespace ns rel repo1/chart --version 1.2.3")
 }
 
+func TestSanitizeDisplay(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain", in: "release-1", want: "release-1"},
+		{name: "control characters", in: "release\n\x1b[31m", want: "release[31m"},
+		{name: "non printable unicode", in: "release\u200bname", want: "releasename"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, SanitizeDisplay(tt.in))
+		})
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "safe value", in: "repo/chart-1.2.3", want: "repo/chart-1.2.3"},
+		{name: "spaces", in: "release name", want: "'release name'"},
+		{name: "shell metacharacters", in: "$(touch /tmp/pwn)", want: "'$(touch /tmp/pwn)'"},
+		{name: "single quote", in: "it's", want: "'it'\\''s'"},
+		{name: "empty", in: "", want: "''"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ShellQuote(tt.in))
+		})
+	}
+}
+
 func TestUpgradeCommands(t *testing.T) {
 	cmds := UpgradeCommands("rel", "ns", "repo1", "chart", "1.2.3")
 	assert.Equal(t, []string{
@@ -380,6 +416,16 @@ entries:
 	assert.Equal(t, idx, idx2)
 }
 
+func TestLoadIndex_RejectsUnsafeRepositoryName(t *testing.T) {
+	searcher := NewChartSearcher(nil, t.TempDir(), false)
+	for _, name := range []string{"", ".", "..", "../escape", "nested/repository", `nested\repository`} {
+		t.Run(name, func(t *testing.T) {
+			_, err := searcher.loadIndex(&repo.Entry{Name: name, URL: "https://example.com"})
+			assert.EqualError(t, err, fmt.Sprintf("invalid repository name %q", name))
+		})
+	}
+}
+
 func TestChartSearcher_PrerelFiltering_StableReturned(t *testing.T) {
 	// The root cause of the cilium bug: versions[0] is a pre-release (rc/alpha),
 	// but a stable version exists behind it.  With includePrerel=false the
@@ -445,6 +491,8 @@ func TestChartSearcher_Search_SkipsUnusableIndexEntries(t *testing.T) {
 
 	res, err := s.Search("demo")
 	assert.Error(t, err, "unusable entries must be reported")
+	assert.ErrorContains(t, err, `chart "demo" has an entry without metadata`)
+	assert.ErrorContains(t, err, `chart "demo" has invalid version "not-a-version"`)
 	assert.Equal(t, "1.2.3", res.Version)
 	assert.Equal(t, "4.5.6", res.AppVersion)
 }
@@ -461,6 +509,7 @@ func TestChartSearcher_Search_IgnoresReposWhoseIndexFailsToLoad(t *testing.T) {
 	s := NewChartSearcher([]*repo.Entry{{Name: "missing"}, {Name: "good"}}, cacheDir, false)
 	res, err := s.Search("demo")
 	assert.Error(t, err, "the repo whose index failed to load must be reported")
+	assert.ErrorContains(t, err, `repo "missing"`)
 	assert.Equal(t, []string{"good"}, res.Repos)
 	assert.Equal(t, "1.0.0", res.Version)
 }

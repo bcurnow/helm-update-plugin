@@ -607,6 +607,54 @@ func grafanaRepoLines(out string) (grafanaLine, communityLine string) {
 	return grafanaLine, communityLine
 }
 
+func TestMain_HumanOutput_SanitizesAndQuotesUntrustedValues(t *testing.T) {
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+	}()
+
+	loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(settings *cli.EnvSettings, debug bool) ([]upgradecheck.Release, error) {
+		return []upgradecheck.Release{{
+			Name:         "release;echo pwn\x1b",
+			Namespace:    "namespace\nname",
+			Chart:        "chart;echo pwn-1.0.0",
+			ChartVersion: "1.0.0",
+			AppVersion:   "1.0.0",
+		}}, nil
+	}
+	newChartSearcherFunc = func(repos []*repo.Entry, cacheDir string, includePrerel bool) chartSearcher {
+		return &fakeSearcher{res: upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{{
+				Repo:       "repo;echo pwn",
+				Version:    "2.0.0",
+				AppVersion: "2.0.0\x1b",
+			}},
+		}}
+	}
+
+	out := runMainCapturingOutput(t, []string{"cmd"})
+	table := strings.SplitN(out, "Upgrade commands:", 2)[0]
+	if strings.Contains(table, "\x1b") {
+		t.Fatalf("human-readable table contains an ANSI escape: %q", table)
+	}
+	if !strings.Contains(table, "release;echo pwn") {
+		t.Fatalf("human-readable table omitted printable release text: %q", table)
+	}
+	if !strings.Contains(out, "helm get values --namespace namespacename 'release;echo pwn'") {
+		t.Fatalf("upgrade commands did not quote untrusted values: %q", out)
+	}
+	if !strings.Contains(out, "helm upgrade --namespace namespacename 'release;echo pwn' 'repo;echo pwn'/'chart;echo pwn'") {
+		t.Fatalf("helm upgrade command did not quote untrusted values: %q", out)
+	}
+}
+
 // grafanaRelease is the installed grafana release shared by the tests below,
 // which each stub different repo-side versions against it.
 var grafanaRelease = upgradecheck.Release{

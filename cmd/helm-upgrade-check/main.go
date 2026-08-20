@@ -60,7 +60,9 @@ func main() {
 
 	settings := cli.New()
 	if debug {
-		fmt.Printf("Debug: kubeconfig=%s, namespace=%s\n", settings.KubeConfig, settings.Namespace())
+		fmt.Printf("Debug: kubeconfig=%s, namespace=%s\n",
+			upgradecheck.SanitizeDisplay(settings.KubeConfig),
+			upgradecheck.SanitizeDisplay(settings.Namespace()))
 	}
 
 	if !jsonOut {
@@ -68,7 +70,7 @@ func main() {
 	}
 	repoEntries, err := loadRepoEntriesFunc(settings)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error loading repo entries:", err)
+		fmt.Fprintln(os.Stderr, "error loading repo entries:", upgradecheck.SanitizeDisplay(err.Error()))
 		exitFunc(1)
 		return
 	}
@@ -78,6 +80,7 @@ func main() {
 	warnings := []string{}
 	seenWarnings := map[string]struct{}{}
 	addWarning := func(message string) {
+		message = upgradecheck.SanitizeDisplay(message)
 		if _, ok := seenWarnings[message]; ok {
 			return
 		}
@@ -97,7 +100,7 @@ func main() {
 	releases, err := fetchReleasesFunc(settings, debug)
 	if err != nil {
 		if len(releases) == 0 {
-			fmt.Fprintln(os.Stderr, "error retrieving releases:", err)
+			fmt.Fprintln(os.Stderr, "error retrieving releases:", upgradecheck.SanitizeDisplay(err.Error()))
 			exitFunc(1)
 			return
 		}
@@ -150,7 +153,9 @@ func main() {
 		if searchErr != nil {
 			var chartSearchErr *upgradecheck.ChartSearchError
 			if errors.As(searchErr, &chartSearchErr) && chartSearchErr.FailedRepos == chartSearchErr.TotalRepos && len(repoEntries) > 0 {
-				fmt.Fprintf(os.Stderr, "error searching for chart %q: all configured repositories failed to load their indexes: %v\n", chartName, searchErr)
+				fmt.Fprintf(os.Stderr, "error searching for chart %q: all configured repositories failed to load their indexes: %s\n",
+					upgradecheck.SanitizeDisplay(chartName),
+					upgradecheck.SanitizeDisplay(searchErr.Error()))
 				exitFunc(1)
 				return
 			}
@@ -288,7 +293,14 @@ func main() {
 			} else if r.Upgradable {
 				printRow = behindPrintf
 			}
-			printRow(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+			printRow(printFormat,
+				upgradecheck.SanitizeDisplay(r.ChartName),
+				upgradecheck.SanitizeDisplay(r.ReleaseName),
+				upgradecheck.SanitizeDisplay(r.Namespace),
+				upgradecheck.SanitizeDisplay(rv.Repo),
+				upgradecheck.SanitizeDisplay(r.InstalledChartVersion),
+				upgradecheck.SanitizeDisplay(rv.LatestChartVersion),
+				upgradecheck.SanitizeDisplay(rv.LatestAppVersion))
 		}
 		if r.Upgradable {
 			upgradableResults = append(upgradableResults, r)
@@ -299,7 +311,7 @@ func main() {
 		fmt.Println("\n\nUpgrade commands:")
 		fmt.Println("─────────────────────────────────────────────────────────────────────────────────────")
 		for _, r := range upgradableResults {
-			fmt.Printf("\n%s (%s):\n", r.ReleaseName, r.Namespace)
+			fmt.Printf("\n%s (%s):\n", upgradecheck.SanitizeDisplay(r.ReleaseName), upgradecheck.SanitizeDisplay(r.Namespace))
 			for _, cmd := range r.Commands {
 				fmt.Printf("  %s\n", cmd)
 			}
@@ -308,7 +320,9 @@ func main() {
 			// would upgrade the release again from a different repo's chart.
 			for _, rv := range r.Repos {
 				if rv.Upgradable && rv.Repo != r.RecommendedRepo {
-					fmt.Printf("  # alternative: %s offers %s instead (pick one, do not run both)\n", rv.Repo, rv.LatestChartVersion)
+					fmt.Printf("  # alternative: %s offers %s instead (pick one, do not run both)\n",
+						upgradecheck.SanitizeDisplay(rv.Repo),
+						upgradecheck.SanitizeDisplay(rv.LatestChartVersion))
 					fmt.Printf("  # %s\n", rv.UpgradeCommand)
 				}
 			}
@@ -320,7 +334,10 @@ func main() {
 		printFormat = "%-20s %-20s %-20s\n"
 		printTableHeader(printFormat, "Release", "Namespace", "Chart")
 		for _, e := range missingCharts {
-			fmt.Printf(printFormat, e.Release, e.Namespace, e.Chart)
+			fmt.Printf(printFormat,
+				upgradecheck.SanitizeDisplay(e.Release),
+				upgradecheck.SanitizeDisplay(e.Namespace),
+				upgradecheck.SanitizeDisplay(e.Chart))
 		}
 	}
 }

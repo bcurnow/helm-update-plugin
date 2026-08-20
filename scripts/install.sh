@@ -29,8 +29,8 @@ esac
 
 # Read version from plugin.yaml
 VERSION="$(grep '^version:' "${PLUGIN_DIR}/plugin.yaml" | awk '{gsub(/"/, "", $2); print $2}')"
-if [[ -z "${VERSION}" ]]; then
-    echo "Could not determine plugin version from plugin.yaml" >&2
+if [[ -z "${VERSION}" || ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+    echo "Could not determine a plausible plugin version from plugin.yaml" >&2
     exit 1
 fi
 
@@ -50,25 +50,38 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
 if command -v curl &>/dev/null; then
-    curl -sSL "${URL}" -o "${TMP}/${FILENAME}"
-    curl -sSL "${CHECKSUMS_URL}" -o "${TMP}/${CHECKSUMS_FILENAME}"
+    curl -fsSL "${URL}" -o "${TMP}/${FILENAME}"
+    curl -fsSL "${CHECKSUMS_URL}" -o "${TMP}/${CHECKSUMS_FILENAME}"
 elif command -v wget &>/dev/null; then
-    wget -qO "${TMP}/${FILENAME}" "${URL}"
-    wget -qO "${TMP}/${CHECKSUMS_FILENAME}" "${CHECKSUMS_URL}"
+    wget -q --output-document="${TMP}/${FILENAME}" "${URL}"
+    wget -q --output-document="${TMP}/${CHECKSUMS_FILENAME}" "${CHECKSUMS_URL}"
 else
     echo "Error: curl or wget is required to install this plugin" >&2
     exit 1
 fi
 
 echo "Verifying checksum..."
+CHECKSUM_LINES="$(grep -F -- "${FILENAME}" "${TMP}/${CHECKSUMS_FILENAME}" || true)"
+if [[ -z "${CHECKSUM_LINES}" ]]; then
+    echo "Error: no checksum entry found for ${FILENAME}" >&2
+    exit 1
+fi
+if [[ "$(printf '%s\n' "${CHECKSUM_LINES}" | wc -l)" -ne 1 ]] || \
+    ! printf '%s\n' "${CHECKSUM_LINES}" | awk -v expected="${FILENAME}" \
+        'NF >= 2 && ($2 == expected || $2 == "*" expected) { found++ } END { exit found == 1 ? 0 : 1 }'; then
+    echo "Error: expected exactly one checksum entry for ${FILENAME}" >&2
+    exit 1
+fi
+
 if command -v sha256sum &>/dev/null; then
-    (cd "${TMP}" && grep "${FILENAME}" "${CHECKSUMS_FILENAME}" | sha256sum --check --status) \
+    (cd "${TMP}" && printf '%s\n' "${CHECKSUM_LINES}" | sha256sum --check --status) \
         || { echo "Error: checksum verification failed for ${FILENAME}" >&2; exit 1; }
 elif command -v shasum &>/dev/null; then
-    (cd "${TMP}" && grep "${FILENAME}" "${CHECKSUMS_FILENAME}" | shasum -a 256 --check --status) \
+    (cd "${TMP}" && printf '%s\n' "${CHECKSUM_LINES}" | shasum -a 256 --check --status) \
         || { echo "Error: checksum verification failed for ${FILENAME}" >&2; exit 1; }
 else
-    echo "Warning: neither sha256sum nor shasum found, skipping checksum verification" >&2
+    echo "Error: neither sha256sum nor shasum is available; refusing to install without checksum verification" >&2
+    exit 1
 fi
 
 mkdir -p "${PLUGIN_DIR}/bin"
