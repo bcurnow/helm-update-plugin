@@ -102,22 +102,40 @@ _release-credentials:
 		echo "Error: No local GPG key found. Run 'gpg --generate-key' first."; \
 		exit 1; \
 	fi
-	@echo "Initializing secure release pipeline..."
-	@read -sp "Enter GPG Passphrase for $(GPG_KEY_NAME): " PASSPHRASE; \
+	@set -e; \
+	cleanup() { rm -f -- "$(SECURE_PASS_FILE)"; }; \
+	trap cleanup EXIT; \
+	trap 'exit 130' HUP INT TERM; \
+	echo "Initializing secure release pipeline..."; \
+	read -sp "Enter GPG Passphrase for $(GPG_KEY_NAME): " PASSPHRASE; \
 	echo ""; \
-	\
-	echo "$$PASSPHRASE" > $(SECURE_PASS_FILE); \
-	chmod 600 $(SECURE_PASS_FILE); \
-	gpg --batch --pinentry-mode loopback --passphrase-file $(SECURE_PASS_FILE) --dry-run --passwd "$(GPG_KEY_NAME)" > /dev/null 2>&1 || { echo "Error: Invalid GPG passphrase or key. Aborting."; rm -f $(SECURE_PASS_FILE); exit 1; }
+	umask 077; \
+	rm -f -- "$(SECURE_PASS_FILE)"; \
+	printf '%s\n' "$$PASSPHRASE" > "$(SECURE_PASS_FILE)"; \
+	gpg --batch --pinentry-mode loopback --passphrase-file "$(SECURE_PASS_FILE)" --dry-run --passwd "$(GPG_KEY_NAME)" > /dev/null 2>&1 || { echo "Error: Invalid GPG passphrase or key. Aborting."; exit 1; }; \
+	trap - EXIT HUP INT TERM
 
 release: tidy test _check-plugin-version _release-credentials
-	@echo "Using GPG Key Name: $(GPG_KEY_NAME)"
-	@command -v goreleaser >/dev/null 2>&1 || (echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; exit 1)
-	@echo "Building release $(VERSION) with goreleaser..."
-	(goreleaser release --clean; STATUS=$$?; rm -f $(SECURE_PASS_FILE); echo "Secure cleanup complete."; exit $$STATUS)
+	@set -e; \
+	cleanup() { rm -f -- "$(SECURE_PASS_FILE)"; }; \
+	trap cleanup EXIT; \
+	trap 'exit 130' HUP INT TERM; \
+	echo "Using GPG Key Name: $(GPG_KEY_NAME)"; \
+	if ! command -v goreleaser >/dev/null 2>&1; then \
+		echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; \
+		exit 1; \
+	fi; \
+	echo "Building release $(VERSION) with goreleaser..."; \
+	goreleaser release --clean
 
 test-release: _release-credentials
-	@echo "Using GPG Key Name: $(GPG_KEY_NAME)"
-	@command -v goreleaser >/dev/null 2>&1 || (echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; exit 1)
-	# Run goreleaser locally in snapshot mode, cleaning up old artifacts first
-	(goreleaser release --snapshot --clean; STATUS=$$?; rm -f $(SECURE_PASS_FILE); echo "Secure cleanup complete."; exit $$STATUS)
+	@set -e; \
+	cleanup() { rm -f -- "$(SECURE_PASS_FILE)"; }; \
+	trap cleanup EXIT; \
+	trap 'exit 130' HUP INT TERM; \
+	echo "Using GPG Key Name: $(GPG_KEY_NAME)"; \
+	if ! command -v goreleaser >/dev/null 2>&1; then \
+		echo "Error: goreleaser is not installed. Install from https://goreleaser.com"; \
+		exit 1; \
+	fi; \
+	goreleaser release --snapshot --clean
