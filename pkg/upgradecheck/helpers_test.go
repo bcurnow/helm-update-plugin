@@ -444,14 +444,14 @@ func TestChartSearcher_Search_SkipsUnusableIndexEntries(t *testing.T) {
 	}
 
 	res, err := s.Search("demo")
-	assert.Error(t, err)
+	assert.Error(t, err, "unusable entries must be reported")
 	assert.Equal(t, "1.2.3", res.Version)
 	assert.Equal(t, "4.5.6", res.AppVersion)
 }
 
 func TestChartSearcher_Search_IgnoresReposWhoseIndexFailsToLoad(t *testing.T) {
-	// A repo with no cached index file must be silently skipped so the repos
-	// that do have an index still produce a result.
+	// A repo with no cached index file must be skipped so the repos that do have
+	// an index still produce a result.
 	cacheDir := t.TempDir()
 	indexYAML := "apiVersion: v1\nentries:\n  demo:\n    - name: demo\n      version: 1.0.0\n      appVersion: 2.0.0\n"
 	if err := os.WriteFile(filepath.Join(cacheDir, helmpath.CacheIndexFile("good")), []byte(indexYAML), 0o644); err != nil {
@@ -460,7 +460,7 @@ func TestChartSearcher_Search_IgnoresReposWhoseIndexFailsToLoad(t *testing.T) {
 
 	s := NewChartSearcher([]*repo.Entry{{Name: "missing"}, {Name: "good"}}, cacheDir, false)
 	res, err := s.Search("demo")
-	assert.Error(t, err)
+	assert.Error(t, err, "the repo whose index failed to load must be reported")
 	assert.Equal(t, []string{"good"}, res.Repos)
 	assert.Equal(t, "1.0.0", res.Version)
 }
@@ -672,9 +672,32 @@ func TestConvertReleaseList_SkipsReleasesWithoutAnAccessor(t *testing.T) {
 	}
 
 	out, err := convertReleaseList([]release.Releaser{&unsupportedReleaser{}, helmRel})
-	assert.Error(t, err)
+	assert.Error(t, err, "the skipped release must be reported")
 	if assert.Len(t, out, 1) {
 		assert.Equal(t, "ok", out[0].Name)
+	}
+}
+
+func TestConvertReleaseList_SkipsReleasesWithoutAUsableChart(t *testing.T) {
+	// A release whose chart or chart metadata is missing must be skipped with an
+	// error instead of panicking inside the Helm chart accessor.
+	for name, rel := range map[string]*releasev1.Release{
+		"nil chart":    {Name: "broken", Namespace: "ns"},
+		"nil metadata": {Name: "broken", Namespace: "ns", Chart: &chartv2.Chart{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			good := &releasev1.Release{
+				Name:      "ok",
+				Namespace: "ns",
+				Chart:     &chartv2.Chart{Metadata: &chartv2.Metadata{Name: "ok", Version: "1.0.0", AppVersion: "1.0.0"}},
+			}
+
+			out, err := convertReleaseList([]release.Releaser{rel, good})
+			assert.ErrorContains(t, err, "broken")
+			if assert.Len(t, out, 1) {
+				assert.Equal(t, "ok", out[0].Name)
+			}
+		})
 	}
 }
 
