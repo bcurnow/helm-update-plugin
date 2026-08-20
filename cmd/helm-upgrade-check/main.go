@@ -100,7 +100,9 @@ func main() {
 			exitFunc(1)
 			return
 		}
-		addWarning(fmt.Sprintf("some releases could not be decoded: %v", err))
+		for _, component := range flattenWarningErrors(err) {
+			addWarning(fmt.Sprintf("release could not be decoded: %v", component))
+		}
 	}
 	if !jsonOut {
 		fmt.Println("done!")

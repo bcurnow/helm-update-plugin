@@ -752,7 +752,7 @@ func TestMain_PartialReleaseDecodeWarnsAndContinues(t *testing.T) {
 		t.Fatalf("invalid JSON output: %v\n%s", err, stdout)
 	}
 	warnings, ok := parsed["warnings"].([]interface{})
-	if !ok || len(warnings) == 0 || !strings.Contains(warnings[0].(string), "some releases could not be decoded") {
+	if !ok || len(warnings) == 0 || !strings.Contains(warnings[0].(string), "release could not be decoded") {
 		t.Fatalf("expected partial release warning in JSON output: %v", parsed["warnings"])
 	}
 	if !strings.Contains(stderr, "warning:") {
