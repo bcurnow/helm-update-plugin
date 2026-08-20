@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"helm-upgrade-check-plugin/pkg/upgradecheck"
 
@@ -56,31 +57,15 @@ func main() {
 		fmt.Printf("Debug: kubeconfig=%s, namespace=%s\n", settings.KubeConfig, settings.Namespace())
 	}
 
-	if !jsonOut {
-		fmt.Print("Loading repository list...")
-	}
-	repoEntries, err := loadRepoEntriesFunc(settings)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error loading repo entries:", err)
-		exitFunc(1)
-	}
-	if !jsonOut {
-		fmt.Println("done!")
-	}
+	repoEntries := runStep(jsonOut, "Loading repository list...", "error loading repo entries:", func() ([]*repo.Entry, error) {
+		return loadRepoEntriesFunc(settings)
+	})
 
 	searcher := newChartSearcherFunc(repoEntries, settings.RepositoryCache, includePrerel)
 
-	if !jsonOut {
-		fmt.Print("Fetching Helm releases from all namespaces...")
-	}
-	releases, err := fetchReleasesFunc(settings, debug)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error retrieving releases:", err)
-		exitFunc(1)
-	}
-	if !jsonOut {
-		fmt.Println("done!")
-	}
+	releases := runStep(jsonOut, "Fetching Helm releases from all namespaces...", "error retrieving releases:", func() ([]upgradecheck.Release, error) {
+		return fetchReleasesFunc(settings, debug)
+	})
 
 	// repoResult carries one repo's own version info for a chart, since a
 	// chart mirrored across multiple repos can have a different version (and
@@ -107,14 +92,8 @@ func main() {
 	var errors []upgradecheck.MissingChartError
 	for _, rel := range releases {
 		chartName := upgradecheck.ChartName(rel.Chart)
-		installedChartVer := rel.ChartVersion
-		if installedChartVer == "" {
-			installedChartVer = "Unknown"
-		}
-		installedAppVer := rel.AppVersion
-		if installedAppVer == "" {
-			installedAppVer = "Unknown"
-		}
+		installedChartVer := upgradecheck.DisplayValue(rel.ChartVersion, "Unknown")
+		installedAppVer := upgradecheck.DisplayValue(rel.AppVersion, "Unknown")
 		info := searcher.Search(chartName)
 		if len(info.Versions) == 0 {
 			errors = append(errors, upgradecheck.MissingChartError{Release: rel.Name, Namespace: rel.Namespace, Chart: chartName})
@@ -125,10 +104,7 @@ func main() {
 		var commands []string
 		upgradable := false
 		for _, v := range info.Versions {
-			latestChartVer := v.Version
-			if latestChartVer == "" || latestChartVer == "null" {
-				latestChartVer = "N/A"
-			}
+			latestChartVer := upgradecheck.DisplayValue(v.Version, "N/A")
 			// Compare chart versions — this is what helm upgrade --version accepts.
 			chartNewer := upgradecheck.CompareVersions(latestChartVer, installedChartVer, includePrerel)
 			// Guard: if both app versions are valid semver and the candidate's app
@@ -147,12 +123,9 @@ func main() {
 			if repoUpgradable {
 				upgradable = true
 				if len(commands) == 0 {
-					commands = append(commands,
-						fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", rel.Namespace, rel.Name, rel.Name),
-						fmt.Sprintf("cat %s.values", rel.Name),
-					)
+					commands = append(commands, upgradecheck.ValuesCommands(rel.Name, rel.Namespace)...)
 				}
-				commands = append(commands, fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", rel.Namespace, rel.Name, v.Repo, chartName, latestChartVer, rel.Name))
+				commands = append(commands, upgradecheck.UpgradeCommand(rel.Name, rel.Namespace, v.Repo, chartName, latestChartVer))
 			}
 		}
 
@@ -210,18 +183,17 @@ func main() {
 	upToDatePrintf := color.New(color.FgGreen).PrintfFunc()
 	upgradablePrintf := color.New(color.FgBlue).PrintfFunc()
 	fmt.Println()
-	fmt.Printf(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Running Version", "Chart Version", "App Version")
-	fmt.Printf(printFormat, "----------", "------------", "---------", "-------", "---------------", "-------------", "-----------")
+	printTableHeader(printFormat, "Chart Name", "Release Name", "Namespace", "Repo(s)", "Running Version", "Chart Version", "App Version")
 	var upgradableResults []resultItem
 	for _, r := range results {
 		// A chart found in multiple repos gets one line per repo, each showing
 		// that repo's own chart/app version rather than a shared value.
 		for _, rv := range r.Repos {
+			printRow := upToDatePrintf
 			if rv.Upgradable {
-				upgradablePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
-			} else {
-				upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+				printRow = upgradablePrintf
 			}
+			printRow(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
 		}
 		if r.Upgradable {
 			upgradableResults = append(upgradableResults, r)
@@ -242,8 +214,7 @@ func main() {
 	if len(errors) > 0 {
 		fmt.Println("\n\nUnable to find chart information in any repo for the following releases:")
 		printFormat = "%-20s %-20s %-20s\n"
-		fmt.Printf(printFormat, "Release", "Namespace", "Chart")
-		fmt.Printf(printFormat, "-------", "---------", "-----")
+		printTableHeader(printFormat, "Release", "Namespace", "Chart")
 		for _, e := range errors {
 			fmt.Printf(printFormat, e.Release, e.Namespace, e.Chart)
 		}
@@ -252,6 +223,37 @@ func main() {
 
 type chartSearcher interface {
 	Search(string) upgradecheck.ChartSearchResult
+}
+
+// runStep performs one of the startup steps that load data before the check
+// itself, reporting progress around it unless quiet (JSON output must stay
+// machine-readable) and exiting on failure.
+func runStep[T any](quiet bool, msg, errPrefix string, fn func() (T, error)) T {
+	if !quiet {
+		fmt.Print(msg)
+	}
+	value, err := fn()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, errPrefix, err)
+		exitFunc(1)
+	}
+	if !quiet {
+		fmt.Println("done!")
+	}
+	return value
+}
+
+// printTableHeader writes the column titles followed by a rule of dashes
+// matching each title's width, using the shared row format.
+func printTableHeader(format string, titles ...string) {
+	cells := make([]any, len(titles))
+	rule := make([]any, len(titles))
+	for i, title := range titles {
+		cells[i] = title
+		rule[i] = strings.Repeat("-", len(title))
+	}
+	fmt.Printf(format, cells...)
+	fmt.Printf(format, rule...)
 }
 
 var loadRepoEntriesFunc = func(settings *cli.EnvSettings) ([]*repo.Entry, error) {

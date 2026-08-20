@@ -222,6 +222,23 @@ func TestPrintUpgradeCommands(t *testing.T) {
 	assert.Contains(t, out, "helm upgrade --namespace ns rel repo1/chart --version 1.2.3")
 }
 
+func TestUpgradeCommands(t *testing.T) {
+	cmds := UpgradeCommands("rel", "ns", "repo1", "chart", "1.2.3")
+	assert.Equal(t, []string{
+		"helm get values --namespace ns rel -o yaml > rel.values",
+		"cat rel.values",
+		"helm upgrade --namespace ns rel repo1/chart --version 1.2.3 --values rel.values",
+	}, cmds)
+	assert.Equal(t, cmds[:2], ValuesCommands("rel", "ns"))
+	assert.Equal(t, cmds[2], UpgradeCommand("rel", "ns", "repo1", "chart", "1.2.3"))
+}
+
+func TestDisplayValue(t *testing.T) {
+	assert.Equal(t, "1.2.3", DisplayValue("1.2.3", "N/A"))
+	assert.Equal(t, "N/A", DisplayValue("", "N/A"))
+	assert.Equal(t, "N/A", DisplayValue("null", "N/A"))
+}
+
 func TestConvertReleaseList(t *testing.T) {
 	helmRel := &releasev1.Release{
 		Name:      "r",
