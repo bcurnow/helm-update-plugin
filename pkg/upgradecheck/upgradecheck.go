@@ -18,6 +18,7 @@ package upgradecheck
 
 import (
 	"strings"
+	"unicode"
 )
 
 // Release represents a Helm release installed in the cluster.
@@ -45,4 +46,40 @@ func ChartName(chart string) string {
 		return chart[:idx]
 	}
 	return chart
+}
+
+// SanitizeDisplay removes non-printable runes before untrusted values are
+// written to a human-readable terminal.
+func SanitizeDisplay(value string) string {
+	var sanitized strings.Builder
+	for _, r := range value {
+		if unicode.IsPrint(r) {
+			sanitized.WriteRune(r)
+		}
+	}
+	return sanitized.String()
+}
+
+// ShellQuote returns a shell-safe representation of a command argument.
+// Values containing only conservative shell-safe characters are returned
+// unchanged to preserve the existing command output for ordinary values.
+func ShellQuote(value string) string {
+	value = SanitizeDisplay(value)
+	if value != "" && shellSafe(value) {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func shellSafe(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			strings.ContainsRune("_+-./:@%=,", r) {
+			continue
+		}
+		return false
+	}
+	return true
 }

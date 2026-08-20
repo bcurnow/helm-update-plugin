@@ -260,6 +260,12 @@ func (s *ChartSearcher) setCachedIndex(name string, idx *repo.IndexFile) {
 }
 
 func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
+	if entry == nil {
+		return nil, fmt.Errorf("repository entry is nil")
+	}
+	if entry.Name == "" || strings.ContainsAny(entry.Name, `/\`) || entry.Name == "." || entry.Name == ".." {
+		return nil, fmt.Errorf("invalid repository name %q", entry.Name)
+	}
 	if idx, ok := s.getCachedIndex(entry.Name); ok {
 		return idx, nil
 	}
@@ -333,9 +339,14 @@ func (s *ChartSearcher) loadIndex(entry *repo.Entry) (*repo.IndexFile, error) {
 // and upgrade a release to the supplied writer.  The commands are prefixed by
 // two spaces to visually nest them beneath the release row in the output.
 func PrintUpgradeCommands(w io.Writer, release, namespace, repos, chartName, version string) {
-	_, _ = fmt.Fprintf(w, "  helm get values --namespace %s %s -o yaml > %s.values\n", namespace, release, release)
-	_, _ = fmt.Fprintf(w, "  cat %s.values\n", release)
-	_, _ = fmt.Fprintf(w, "  helm upgrade --namespace %s %s %s/%s --version %s --values %s.values\n", namespace, release, repos, chartName, version, release)
+	quotedNamespace := ShellQuote(namespace)
+	quotedRelease := ShellQuote(release)
+	quotedRepos := ShellQuote(repos)
+	quotedChartName := ShellQuote(chartName)
+	quotedVersion := ShellQuote(version)
+	_, _ = fmt.Fprintf(w, "  helm get values --namespace %s %s -o yaml > %s.values\n", quotedNamespace, quotedRelease, quotedRelease)
+	_, _ = fmt.Fprintf(w, "  cat %s.values\n", quotedRelease)
+	_, _ = fmt.Fprintf(w, "  helm upgrade --namespace %s %s %s/%s --version %s --values %s.values\n", quotedNamespace, quotedRelease, quotedRepos, quotedChartName, quotedVersion, quotedRelease)
 }
 
 // convertReleaseList turns the Helm SDK's slice of release.Releaser into the
@@ -402,7 +413,11 @@ func FetchReleases(settings *cli.EnvSettings, debug bool) ([]Release, error) {
 			version, _ := md["Version"].(string)
 			appVersion, _ := md["AppVersion"].(string)
 			chartName := ca.Name()
-			fmt.Printf("Debug: loaded release %s in namespace %s (chart: %s, app_version: %s)\n", ra.Name(), ra.Namespace(), chartName+"-"+version, appVersion)
+			fmt.Printf("Debug: loaded release %s in namespace %s (chart: %s, app_version: %s)\n",
+				SanitizeDisplay(ra.Name()),
+				SanitizeDisplay(ra.Namespace()),
+				SanitizeDisplay(chartName+"-"+version),
+				SanitizeDisplay(appVersion))
 		}
 	}
 

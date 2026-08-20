@@ -222,6 +222,42 @@ func TestPrintUpgradeCommands(t *testing.T) {
 	assert.Contains(t, out, "helm upgrade --namespace ns rel repo1/chart --version 1.2.3")
 }
 
+func TestSanitizeDisplay(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain", in: "release-1", want: "release-1"},
+		{name: "control characters", in: "release\n\x1b[31m", want: "release[31m"},
+		{name: "non printable unicode", in: "release\u200bname", want: "releasename"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, SanitizeDisplay(tt.in))
+		})
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "safe value", in: "repo/chart-1.2.3", want: "repo/chart-1.2.3"},
+		{name: "spaces", in: "release name", want: "'release name'"},
+		{name: "shell metacharacters", in: "$(touch /tmp/pwn)", want: "'$(touch /tmp/pwn)'"},
+		{name: "single quote", in: "it's", want: "'it'\\''s'"},
+		{name: "empty", in: "", want: "''"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ShellQuote(tt.in))
+		})
+	}
+}
+
 func TestConvertReleaseList(t *testing.T) {
 	helmRel := &releasev1.Release{
 		Name:      "r",
@@ -293,6 +329,16 @@ entries:
 	idx2, err := searcher.loadIndex(repoEntry)
 	assert.NoError(t, err)
 	assert.Equal(t, idx, idx2)
+}
+
+func TestLoadIndex_RejectsUnsafeRepositoryName(t *testing.T) {
+	searcher := NewChartSearcher(nil, t.TempDir(), false)
+	for _, name := range []string{"", ".", "..", "../escape", "nested/repository", `nested\repository`} {
+		t.Run(name, func(t *testing.T) {
+			_, err := searcher.loadIndex(&repo.Entry{Name: name, URL: "https://example.com"})
+			assert.EqualError(t, err, fmt.Sprintf("invalid repository name %q", name))
+		})
+	}
 }
 
 func TestChartSearcher_PrerelFiltering_StableReturned(t *testing.T) {

@@ -148,11 +148,20 @@ func main() {
 				upgradable = true
 				if len(commands) == 0 {
 					commands = append(commands,
-						fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values", rel.Namespace, rel.Name, rel.Name),
-						fmt.Sprintf("cat %s.values", rel.Name),
+						fmt.Sprintf("helm get values --namespace %s %s -o yaml > %s.values",
+							upgradecheck.ShellQuote(rel.Namespace),
+							upgradecheck.ShellQuote(rel.Name),
+							upgradecheck.ShellQuote(rel.Name)),
+						fmt.Sprintf("cat %s.values", upgradecheck.ShellQuote(rel.Name)),
 					)
 				}
-				commands = append(commands, fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values", rel.Namespace, rel.Name, v.Repo, chartName, latestChartVer, rel.Name))
+				commands = append(commands, fmt.Sprintf("helm upgrade --namespace %s %s %s/%s --version %s --values %s.values",
+					upgradecheck.ShellQuote(rel.Namespace),
+					upgradecheck.ShellQuote(rel.Name),
+					upgradecheck.ShellQuote(v.Repo),
+					upgradecheck.ShellQuote(chartName),
+					upgradecheck.ShellQuote(latestChartVer),
+					upgradecheck.ShellQuote(rel.Name)))
 			}
 		}
 
@@ -217,10 +226,17 @@ func main() {
 		// A chart found in multiple repos gets one line per repo, each showing
 		// that repo's own chart/app version rather than a shared value.
 		for _, rv := range r.Repos {
+			chartName := upgradecheck.SanitizeDisplay(r.ChartName)
+			releaseName := upgradecheck.SanitizeDisplay(r.ReleaseName)
+			namespace := upgradecheck.SanitizeDisplay(r.Namespace)
+			repoName := upgradecheck.SanitizeDisplay(rv.Repo)
+			installedChartVersion := upgradecheck.SanitizeDisplay(r.InstalledChartVersion)
+			latestChartVersion := upgradecheck.SanitizeDisplay(rv.LatestChartVersion)
+			latestAppVersion := upgradecheck.SanitizeDisplay(rv.LatestAppVersion)
 			if rv.Upgradable {
-				upgradablePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+				upgradablePrintf(printFormat, chartName, releaseName, namespace, repoName, installedChartVersion, latestChartVersion, latestAppVersion)
 			} else {
-				upToDatePrintf(printFormat, r.ChartName, r.ReleaseName, r.Namespace, rv.Repo, r.InstalledChartVersion, rv.LatestChartVersion, rv.LatestAppVersion)
+				upToDatePrintf(printFormat, chartName, releaseName, namespace, repoName, installedChartVersion, latestChartVersion, latestAppVersion)
 			}
 		}
 		if r.Upgradable {
@@ -232,7 +248,7 @@ func main() {
 		fmt.Println("\n\nUpgrade commands:")
 		fmt.Println("─────────────────────────────────────────────────────────────────────────────────────")
 		for _, r := range upgradableResults {
-			fmt.Printf("\n%s (%s):\n", r.ReleaseName, r.Namespace)
+			fmt.Printf("\n%s (%s):\n", upgradecheck.SanitizeDisplay(r.ReleaseName), upgradecheck.SanitizeDisplay(r.Namespace))
 			for _, cmd := range r.Commands {
 				fmt.Printf("  %s\n", cmd)
 			}
@@ -245,7 +261,10 @@ func main() {
 		fmt.Printf(printFormat, "Release", "Namespace", "Chart")
 		fmt.Printf(printFormat, "-------", "---------", "-----")
 		for _, e := range errors {
-			fmt.Printf(printFormat, e.Release, e.Namespace, e.Chart)
+			fmt.Printf(printFormat,
+				upgradecheck.SanitizeDisplay(e.Release),
+				upgradecheck.SanitizeDisplay(e.Namespace),
+				upgradecheck.SanitizeDisplay(e.Chart))
 		}
 	}
 }
