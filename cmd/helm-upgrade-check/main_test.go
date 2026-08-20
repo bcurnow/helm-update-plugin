@@ -737,6 +737,153 @@ func TestMain_NotUpgradable_DropsRepoEntriesNotMatchingRunningVersion(t *testing
 	}
 }
 
+// stubPluginFuncs replaces the indirection hooks main() uses with stubs
+// returning the supplied releases and search result, restoring the originals
+// (and os.Args) when the test finishes.
+func stubPluginFuncs(t *testing.T, releases []upgradecheck.Release, res upgradecheck.ChartSearchResult) {
+	t.Helper()
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origNew := newChartSearcherFunc
+	origArgs := os.Args
+	t.Cleanup(func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		newChartSearcherFunc = origNew
+		os.Args = origArgs
+	})
+
+	loadRepoEntriesFunc = func(_ *cli.EnvSettings) ([]*repo.Entry, error) {
+		return []*repo.Entry{}, nil
+	}
+	fetchReleasesFunc = func(_ *cli.EnvSettings, _ bool) ([]upgradecheck.Release, error) {
+		return releases, nil
+	}
+	newChartSearcherFunc = func(_ []*repo.Entry, _ string, _ bool) chartSearcher {
+		return &fakeSearcher{res: res}
+	}
+}
+
+func TestMain_VersionFlag(t *testing.T) {
+	// --version prints the version and exits before touching repos or the
+	// cluster, so the stubs must never be called.
+	origLoad := loadRepoEntriesFunc
+	origFetch := fetchReleasesFunc
+	origArgs := os.Args
+	defer func() {
+		loadRepoEntriesFunc = origLoad
+		fetchReleasesFunc = origFetch
+		os.Args = origArgs
+	}()
+	loadRepoEntriesFunc = func(_ *cli.EnvSettings) ([]*repo.Entry, error) {
+		t.Error("repo entries must not be loaded when --version is given")
+		return nil, nil
+	}
+	fetchReleasesFunc = func(_ *cli.EnvSettings, _ bool) ([]upgradecheck.Release, error) {
+		t.Error("releases must not be fetched when --version is given")
+		return nil, nil
+	}
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--version"})
+	if !strings.Contains(out, "helm-upgrade-check version "+Version) {
+		t.Errorf("expected version output, got: %q", out)
+	}
+}
+
+func TestMain_MissingChart_ReportedSeparately(t *testing.T) {
+	// A release whose chart isn't in any repo can't be evaluated, so it is
+	// listed under "Unable to find chart information" instead of the table.
+	stubPluginFuncs(t,
+		[]upgradecheck.Release{{Name: "mystery", Namespace: "ns", Chart: "mystery-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"}},
+		upgradecheck.ChartSearchResult{},
+	)
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	if results, _ := parsed["results"].([]interface{}); len(results) != 0 {
+		t.Errorf("expected no results for a chart missing from every repo, got %v", results)
+	}
+	missing, _ := parsed["missing_charts"].([]interface{})
+	if len(missing) != 1 {
+		t.Fatalf("expected 1 missing chart, got %v", parsed["missing_charts"])
+	}
+	entry := missing[0].(map[string]interface{})
+	if entry["Release"] != "mystery" || entry["Namespace"] != "ns" || entry["Chart"] != "mystery" {
+		t.Errorf("unexpected missing chart entry: %v", entry)
+	}
+
+	humanOut := runMainCapturingOutput(t, []string{"cmd"})
+	if !strings.Contains(humanOut, "Unable to find chart information in any repo") {
+		t.Errorf("expected the missing chart section in human output, got: %q", humanOut)
+	}
+	if !strings.Contains(humanOut, "mystery") {
+		t.Errorf("expected the missing release to be listed, got: %q", humanOut)
+	}
+	if strings.Contains(humanOut, "Upgrade commands:") {
+		t.Errorf("no upgrade commands should be printed for a missing chart, got: %q", humanOut)
+	}
+}
+
+func TestMain_UnknownInstalledVersions(t *testing.T) {
+	// A release without chart/app versions in its metadata still has to be
+	// reported — as "Unknown" — rather than silently dropped.
+	stubPluginFuncs(t,
+		[]upgradecheck.Release{{Name: "rel", Namespace: "ns", Chart: "chart"}},
+		upgradecheck.ChartSearchResult{
+			Versions: []upgradecheck.RepoChartVersion{{Repo: "r1", Version: "2.0.0", AppVersion: "2.0.0"}},
+		},
+	)
+
+	out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	res := parsed["results"].([]interface{})[0].(map[string]interface{})
+	if res["installed_chart_version"] != "Unknown" {
+		t.Errorf("installed_chart_version: got %v, want Unknown", res["installed_chart_version"])
+	}
+	if res["installed_app_version"] != "Unknown" {
+		t.Errorf("installed_app_version: got %v, want Unknown", res["installed_app_version"])
+	}
+	// "Unknown" isn't semver, so no upgrade can be claimed.
+	if up, _ := res["upgradable"].(bool); up {
+		t.Error("expected upgradable=false when the installed version is unknown")
+	}
+}
+
+func TestMain_MissingRepoVersionShownAsNA(t *testing.T) {
+	// Index entries can carry an empty or literal "null" version; those are
+	// displayed as N/A and never treated as an upgrade.
+	for _, version := range []string{"", "null"} {
+		t.Run("version="+version, func(t *testing.T) {
+			stubPluginFuncs(t,
+				[]upgradecheck.Release{{Name: "rel", Namespace: "ns", Chart: "chart-1.0.0", ChartVersion: "1.0.0", AppVersion: "1.0.0"}},
+				upgradecheck.ChartSearchResult{
+					Versions: []upgradecheck.RepoChartVersion{{Repo: "r1", Version: version, AppVersion: "1.0.0"}},
+				},
+			)
+
+			out := runMainCapturingOutput(t, []string{"cmd", "--json"})
+			var parsed map[string]interface{}
+			if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v\n%s", err, out)
+			}
+			res := parsed["results"].([]interface{})[0].(map[string]interface{})
+			repo0 := res["repos"].([]interface{})[0].(map[string]interface{})
+			if repo0["latest_chart_version"] != "N/A" {
+				t.Errorf("latest_chart_version: got %v, want N/A", repo0["latest_chart_version"])
+			}
+			if up, _ := res["upgradable"].(bool); up {
+				t.Error("expected upgradable=false when the repo has no usable version")
+			}
+		})
+	}
+}
+
 func TestMain_NotUpgradable_NoRepoMatchesRunning_KeepsAllEntries(t *testing.T) {
 	// Edge case: if the installed version doesn't match ANY repo's current
 	// latest (e.g. it's since been superseded everywhere, or was never any
