@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.0.0] - 2026-08-19
+## [3.0.0] - 2026-08-22
 
 Released as 2.1.0 by mistake; the JSON output and flag changes below are breaking, so the release was retagged 3.0.0. If you installed 2.1.0, reinstall to pick up 3.0.0 — the two are the same feature set plus the fixes listed here.
 
@@ -30,8 +30,17 @@ Released as 2.1.0 by mistake; the JSON output and flag changes below are breakin
 - **Unreadable repository indexes were indistinguishable from repos that simply lack the chart.** A missing or corrupt `<repo>-index.yaml` was silently skipped, so a chart could be reported as available in one repo when a second repo was merely unreadable. Load failures are now collected per repo and surfaced as warnings.
 - **Multiple upgradable repos printed as a runnable command sequence.** Alternatives are now printed commented out and labelled `# alternative: <repo> offers <version> instead (pick one, do not run both)`, so the whole block is safe to paste.
 - **A repo lagging behind another repo's upgrade was colored green ("up to date").** Such rows are now yellow; green means nothing newer exists for that release anywhere.
+- **No indication when zero repositories are configured.** Every release would silently show up under "unable to find chart information" with no explanation why; a `warning: no repositories are configured; every release will be reported as missing` message is now printed.
 - **Data race in concurrent repository index loading** — `ChartSearcher.loadIndex` is called from one goroutine per repo, but the `idxCache` map it read from and wrote to had no synchronization. Go maps are not safe for concurrent access even across distinct keys, so this could corrupt results whenever a chart existed in multiple repos — e.g. `grafana` and `grafana-community` both reporting the same (wrong) chart/app version instead of their own. `idxCache` is now guarded by a mutex. Confirmed with `go test -race` before and after the fix.
 - **Human-readable table showed the installed version instead of each repo's own version** for "up to date" (green) rows. Once the data race above was fixed, the JSON output was already correct per-repo, but the table's non-upgradable branch still printed `r.InstalledChartVersion`/`r.InstalledAppVersion` for every repo row, so e.g. `grafana` and `grafana-community` both displayed the same version even though `grafana`'s own latest (`10.5.15`) genuinely lagged behind what was installed (`12.11.0`, from `grafana-community`).
+
+### Security
+
+- **Untrusted values sanitized before display.** Release, namespace, chart, and repo names originate from cluster and repository-index data and could carry terminal control/escape sequences; they are now stripped of non-printable characters before being written to the table, JSON, and error output.
+- **Generated `helm` commands are now shell-quoted.** Release, namespace, repo, and chart values are quoted before being interpolated into the `helm get values` / `helm upgrade` commands the plugin prints, so a release or repo name containing shell metacharacters can no longer inject additional commands into copy-pasted output.
+- **Repository names are validated before building cache file paths.** A configured repo name containing `/`, `\`, `.`, or `..` is now rejected instead of being used to construct the `<repo>-index.yaml` path, closing a path-traversal read outside the Helm repository cache directory.
+- **`scripts/install.sh` now requires successful checksum verification.** Previously, if neither `sha256sum` nor `shasum` was available, the installer printed a warning and installed the downloaded binary unverified; it now refuses to install instead. Fixed a substring-match bug that could pick the wrong (or multiple) checksum entries when filenames overlap, and the version read from `plugin.yaml` is now validated as a plausible semver before being used to build download URLs.
+- **Patched dependencies**: `golang.org/x/net` 0.55.0 → 0.56.0, `golang.org/x/text` 0.38.0 → 0.39.0, `oras.land/oras-go/v2` 2.6.1 → 2.6.2, and the Go toolchain pinned to `go1.26.6`.
 
 ### Changed
 
@@ -262,7 +271,7 @@ R = number of installed releases
 | 1.0.2 | 2026-06-05 | Chart/app version accuracy, output improvements, Makefile CI targets | Released |
 | 1.0.3 | 2026-06-14 | Fix pre-release masking stable upgrades; red/blue upgrade color scheme | Released |
 | 2.0.0 | 2026-06-14 | Helm 4 SDK and `cli/v1` plugin manifest | Released |
-| 3.0.0 | 2026-08-19 | Per-repo chart versions, local cache reads, single recommended upgrade command | **Current** |
+| 3.0.0 | 2026-08-22 | Per-repo chart versions, local cache reads, single recommended upgrade command, security hardening | **Current** |
 
 ## Upgrade Instructions
 
