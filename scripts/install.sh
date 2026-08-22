@@ -4,6 +4,31 @@ set -euo pipefail
 BINARY="helm-upgrade-check"
 PLUGIN_DIR="${HELM_PLUGIN_DIR}"
 
+# Local development escape hatch: `make install-dev` sets this to the binary
+# it just built so that a local build is what gets installed, instead of this
+# script downloading whatever plugin.yaml's version has published on GitHub
+# (which may lag behind, or not exist yet, during development). Unset for a
+# normal install, so real installs always verify a downloaded release.
+if [[ -n "${HELM_UPGRADE_CHECK_LOCAL_BIN:-}" ]]; then
+    if [[ ! -x "${HELM_UPGRADE_CHECK_LOCAL_BIN}" ]]; then
+        echo "Error: HELM_UPGRADE_CHECK_LOCAL_BIN=${HELM_UPGRADE_CHECK_LOCAL_BIN} is not an executable file" >&2
+        exit 1
+    fi
+    echo "Installing local development build from ${HELM_UPGRADE_CHECK_LOCAL_BIN}"
+    mkdir -p "${PLUGIN_DIR}/bin"
+    DEST="${PLUGIN_DIR}/bin/${BINARY}"
+    # A local-directory `helm plugin install` symlinks PLUGIN_DIR straight back
+    # to the source checkout, so the source binary and DEST are often already
+    # the same file; skip the copy in that case instead of erroring on cp's
+    # same-file check.
+    if [[ "$(realpath -- "${HELM_UPGRADE_CHECK_LOCAL_BIN}")" != "$(realpath -m -- "${DEST}")" ]]; then
+        cp "${HELM_UPGRADE_CHECK_LOCAL_BIN}" "${DEST}"
+    fi
+    chmod +x "${DEST}"
+    echo "Installed ${BINARY} (local dev build)"
+    exit 0
+fi
+
 # Detect OS
 RAW_OS="$(uname -s)"
 case "${RAW_OS}" in

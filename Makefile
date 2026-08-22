@@ -49,10 +49,13 @@ coverage-html: coverage
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "HTML coverage report generated: coverage.html"
 
-# Build and (re)install the plugin locally for development.
+# Build and (re)install the plugin locally for development. The install hook
+# normally downloads a matching GitHub Release; HELM_UPGRADE_CHECK_LOCAL_BIN
+# tells it to use the binary just built instead, so a local build is always
+# what ends up installed even when plugin.yaml's version has no release yet.
 install-dev: build
 	helm plugin remove upgrade-check 2>/dev/null || true
-	helm plugin install .
+	HELM_UPGRADE_CHECK_LOCAL_BIN="$(CURDIR)/$(BIN_DIR)/$(BINARY_NAME)" helm plugin install .
 
 clean:
 	rm -rf $(BIN_DIR)
